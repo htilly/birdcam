@@ -3,6 +3,22 @@
   const LAST_VISIT_KEY = 'birdcam_last_visit';
   const STATS_POLL_INTERVAL = 8000;
 
+  // Apply configurable site name
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    const name = cfg.siteName || 'Birdcam Live';
+    document.title = name;
+    const logoText = document.querySelector('.logo');
+    if (logoText) {
+      // Replace text node (last child) only, keep the <img>
+      for (let node of logoText.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
+          node.textContent = ' ' + name;
+          break;
+        }
+      }
+    }
+  }).catch(() => {});
+
   const video = document.getElementById('video');
   const videoOverlay = document.getElementById('video-overlay');
   const cameraTabs = document.getElementById('camera-tabs');
@@ -38,6 +54,7 @@
 
   function renderTabs() {
     cameraTabs.innerHTML = '';
+    cameraTabs.style.display = cameras.length > 1 ? '' : 'none';
     cameras.forEach((cam) => {
       const tab = document.createElement('button');
       tab.type = 'button';
@@ -321,7 +338,7 @@
   let isAdmin = false;
   let lightboxSnap = null;
   let allStarredSnaps = [];
-  fetch('/api/admin/me').then(r => r.json()).then(d => { isAdmin = !!d.isAdmin; }).catch(() => {});
+  const adminMePromise = fetch('/api/admin/me').then(r => r.json()).then(d => { isAdmin = !!d.isAdmin; }).catch(() => {});
 
   function makeSnapThumb(s, onClick) {
     const thumb = document.createElement('div');

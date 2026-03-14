@@ -206,6 +206,10 @@ app.get('/api/admin/me', (req, res) => {
   res.json({ isAdmin: !!(req.session && req.session.userId) });
 });
 
+app.get('/api/config', (req, res) => {
+  res.json({ siteName: db.getSetting('site_name') || 'Birdcam Live' });
+});
+
 const server = http.createServer(app);
 
 // --- WebSocket chat with rate limiting ---

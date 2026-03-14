@@ -72,19 +72,23 @@ function breadcrumb(...parts) {
   return `<div class="breadcrumb">${links}</div>`;
 }
 
+function getSiteName() {
+  return db.getSetting('site_name') || 'Birdcam Live';
+}
+
 const layout = (title, navHtml, body) => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${escapeHtml(title)} – Birdcam Admin</title>
+  <title>${escapeHtml(title)} – ${escapeHtml(getSiteName())} Admin</title>
   <link rel="stylesheet" href="/admin/style.css">
 </head>
 <body class="admin">
   <div class="admin-wrap">
     <header class="admin-header">
-      <a href="/admin">Birdcam Admin</a>
+      <a href="/admin">${escapeHtml(getSiteName())} Admin</a>
       ${title !== 'Login' && title !== 'Setup' ? '<a href="/admin/logout" class="btn btn-ghost">Logout</a>' : ''}
     </header>
     <main class="admin-main">
@@ -712,11 +716,20 @@ router.get('/settings', requireLogin, (req, res) => {
   const snapRateWindow = settings.snapshot_rate_window_sec || '60';
   const snapStripStarred = settings.snap_strip_starred || '3';
   const snapStripTotal = settings.snap_strip_total || '5';
+  const siteName = settings.site_name || 'Birdcam Live';
   res.send(layout('Settings', nav('settings'), `
     <h1>Settings</h1>
     ${req.query.msg ? `<div class="admin-msg admin-msg-ok">${escapeHtml(req.query.msg)}</div>` : ''}
     <form method="post" action="/admin/settings" class="admin-form">
       ${csrfField(req)}
+      <fieldset class="settings-group">
+        <legend>Site</legend>
+        <div>
+          <label for="site-name">Site name</label>
+          <input type="text" id="site-name" name="site_name" value="${escapeHtml(siteName)}" maxlength="60" style="width:100%;max-width:320px">
+        </div>
+        <p class="field-hint">Shown in the browser tab, header logo text, and admin panel. Default: Birdcam Live.</p>
+      </fieldset>
       <fieldset class="settings-group">
         <legend>Network / Proxy</legend>
         <label class="checkbox-label">
@@ -997,6 +1010,8 @@ router.post('/settings', requireLogin, verifyCsrf, (req, res) => {
   db.setSetting('snapshot_rate_window_sec', String(snapRateWindow));
   db.setSetting('snap_strip_starred', String(snapStripStarred));
   db.setSetting('snap_strip_total', String(snapStripTotal));
+  const siteName = String(req.body.site_name || 'Birdcam Live').trim().slice(0, 60) || 'Birdcam Live';
+  db.setSetting('site_name', siteName);
   res.redirect('/admin/settings?msg=Settings+saved');
 });
 
