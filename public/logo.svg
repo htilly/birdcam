@@ -13,7 +13,7 @@
   <circle cx="60" cy="42" r="14" fill="#4ade80"/>
 
   <!-- Wing -->
-  <ellipse cx="44" cy="65" rx="10" ry="6" rx="10" ry="6" fill="#22c55e" transform="rotate(-20 44 65)"/>
+  <ellipse cx="44" cy="65" rx="10" ry="6" fill="#22c55e" transform="rotate(-20 44 65)"/>
 
   <!-- Belly highlight -->
   <ellipse cx="62" cy="67" rx="11" ry="9" fill="#bbf7d0"/>
