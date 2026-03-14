@@ -91,6 +91,20 @@ function migrate() {
     }
   }
 
+  // Chat message persistence
+  const chatTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_messages'").get();
+  if (!chatTable) {
+    d.exec(`
+      CREATE TABLE chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nickname TEXT NOT NULL,
+        text TEXT NOT NULL,
+        time TEXT NOT NULL
+      );
+      CREATE INDEX idx_chat_messages_id ON chat_messages(id);
+    `);
+  }
+
   // Visitor tracking for admin stats
   const visitsTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='visits'").get();
   if (!visitsTable) {
@@ -272,6 +286,25 @@ function getStarredSnapshot() {
   return getDb().prepare("SELECT * FROM snapshots WHERE starred = 1 LIMIT 1").get();
 }
 
+function getStarredSnapshots(limit = 3) {
+  return getDb().prepare("SELECT * FROM snapshots WHERE starred = 1 ORDER BY id DESC LIMIT ?").all(limit);
+}
+
+function getAllStarredSnapshots() {
+  return getDb().prepare("SELECT * FROM snapshots WHERE starred = 1 ORDER BY id DESC").all();
+}
+
+// --- Chat messages ---
+function addChatMessage(nickname, text, time) {
+  getDb().prepare('INSERT INTO chat_messages (nickname, text, time) VALUES (?, ?, ?)').run(nickname, text, time);
+  // Prune to keep only last 100 messages
+  getDb().prepare('DELETE FROM chat_messages WHERE id NOT IN (SELECT id FROM chat_messages ORDER BY id DESC LIMIT 100)').run();
+}
+
+function getChatMessages(limit = 50) {
+  return getDb().prepare('SELECT nickname, text, time FROM chat_messages ORDER BY id DESC LIMIT ?').all(limit).reverse();
+}
+
 // --- Visitor stats ---
 function recordVisit(visitorKey) {
   if (!visitorKey || String(visitorKey).length > 128) return;
@@ -333,6 +366,10 @@ module.exports = {
   getLatestSnapshots,
   getAllSnapshots,
   deleteSnapshot,
+  getStarredSnapshots,
+  getAllStarredSnapshots,
   setSnapshotStarred,
   getStarredSnapshot,
+  addChatMessage,
+  getChatMessages,
 };

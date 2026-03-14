@@ -106,7 +106,7 @@
         } else if (data.type === 'stats') {
           updateStatsFromPayload(data);
         } else if (data.type === 'snapshots') {
-          renderSnapshots(data.latest || [], data.starred || null);
+          renderSnapshots(data);
         }
       } catch (_) {}
     };
@@ -311,15 +311,25 @@
   const snapLightboxImg = document.getElementById('snap-lightbox-img');
   const snapLightboxCaption = document.getElementById('snap-lightbox-caption');
   const snapLightboxClose = document.getElementById('snap-lightbox-close');
+  const snapLightboxStar = document.getElementById('snap-lightbox-star');
+  const snapLightboxDelete = document.getElementById('snap-lightbox-delete');
   const snapLightboxBg = snapLightbox.querySelector('.snap-lightbox-bg');
+  const starsModal = document.getElementById('stars-modal');
+  const starsModalGrid = document.getElementById('stars-modal-grid');
+  const starsModalClose = document.getElementById('stars-modal-close');
+  const starsModalBg = starsModal.querySelector('.stars-modal-bg');
+  let isAdmin = false;
+  let lightboxSnap = null;
+  let allStarredSnaps = [];
+  fetch('/api/admin/me').then(r => r.json()).then(d => { isAdmin = !!d.isAdmin; }).catch(() => {});
 
-  function makeSnapThumb(s, isStarred) {
+  function makeSnapThumb(s, onClick) {
     const thumb = document.createElement('div');
-    thumb.className = 'snap-thumb' + (isStarred ? ' snap-thumb--starred' : '');
+    thumb.className = 'snap-thumb' + (s.starred ? ' snap-thumb--starred' : '');
     const img = document.createElement('img');
     img.src = s.url;
     img.alt = 'Snapshot by ' + s.nickname;
-    if (isStarred) {
+    if (s.starred) {
       const badge = document.createElement('span');
       badge.className = 'snap-star-badge';
       badge.textContent = '\u2B50';
@@ -331,46 +341,86 @@
     cap.textContent = s.nickname + ' \u00B7 ' + t;
     thumb.appendChild(img);
     thumb.appendChild(cap);
-    thumb.addEventListener('click', () => openLightbox(s));
+    thumb.addEventListener('click', onClick);
     return thumb;
   }
 
-  function renderSnapshots(snaps, starred) {
+  function renderSnapshots(data) {
     snapStrip.innerHTML = '';
-    const hasStarred = starred && starred.id;
-    const hasLatest = snaps && snaps.length;
-    if (!hasStarred && !hasLatest) return;
+    const starred = data.starred || [];
+    const latest = data.latest || [];
+    allStarredSnaps = data.allStarred || [];
+    if (!starred.length && !latest.length) return;
 
-    if (hasStarred) {
-      snapStrip.appendChild(makeSnapThumb(starred, true));
+    starred.forEach(s => snapStrip.appendChild(makeSnapThumb(s, () => openLightbox(s))));
+    latest.forEach(s => snapStrip.appendChild(makeSnapThumb(s, () => openLightbox(s))));
+
+    if (allStarredSnaps.length > 0) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'snap-all-stars-btn';
+      btn.textContent = '\u2B50 All stars';
+      btn.addEventListener('click', openStarsModal);
+      snapStrip.appendChild(btn);
     }
-    if (hasLatest) {
-      snaps.forEach(s => {
-        // Don't duplicate the starred snap if it's also in latest
-        if (hasStarred && s.id === starred.id) return;
-        snapStrip.appendChild(makeSnapThumb(s, false));
-      });
-    }
-    const label = document.createElement('span');
-    label.className = 'snap-strip-label';
-    label.textContent = '\uD83D\uDCF7 Latest snaps';
-    snapStrip.appendChild(label);
   }
 
   function openLightbox(s) {
+    lightboxSnap = s;
     snapLightboxImg.src = s.url;
     const t = new Date(s.created_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
-    snapLightboxCaption.textContent = '📷 ' + s.nickname + (s.camera_name ? ' · ' + s.camera_name : '') + ' · ' + t;
+    snapLightboxCaption.textContent = '\uD83D\uDCF7 ' + s.nickname + (s.camera_name ? ' \u00B7 ' + s.camera_name : '') + ' \u00B7 ' + t;
+    if (isAdmin && s.id) {
+      snapLightboxStar.textContent = s.starred ? '\u2605 Unstar' : '\u2B50 Star';
+      snapLightboxStar.classList.remove('hidden');
+      snapLightboxDelete.classList.remove('hidden');
+    } else {
+      snapLightboxStar.classList.add('hidden');
+      snapLightboxDelete.classList.add('hidden');
+    }
     snapLightbox.classList.remove('hidden');
   }
 
-  function closeLightbox() { snapLightbox.classList.add('hidden'); }
+  function closeLightbox() { snapLightbox.classList.add('hidden'); lightboxSnap = null; }
   snapLightboxClose.addEventListener('click', closeLightbox);
   snapLightboxBg.addEventListener('click', closeLightbox);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeLightbox(); closeStarsModal(); } });
+
+  snapLightboxStar.addEventListener('click', () => {
+    if (!lightboxSnap || !lightboxSnap.id) return;
+    const newStarred = !lightboxSnap.starred;
+    fetch(`/api/admin/snapshots/${lightboxSnap.id}/star`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ starred: newStarred }),
+    }).then(r => r.json()).then(d => {
+      if (d.ok) {
+        lightboxSnap.starred = d.starred;
+        snapLightboxStar.textContent = d.starred ? '\u2605 Unstar' : '\u2B50 Star';
+      }
+    }).catch(() => {});
+  });
+
+  snapLightboxDelete.addEventListener('click', () => {
+    if (!lightboxSnap || !lightboxSnap.id) return;
+    if (!confirm('Delete this snapshot?')) return;
+    fetch(`/api/admin/snapshots/${lightboxSnap.id}/delete`, { method: 'POST' })
+      .then(r => r.json()).then(d => { if (d.ok) closeLightbox(); }).catch(() => {});
+  });
+
+  function openStarsModal() {
+    starsModalGrid.innerHTML = '';
+    allStarredSnaps.forEach(s => {
+      starsModalGrid.appendChild(makeSnapThumb(s, () => { closeStarsModal(); openLightbox(s); }));
+    });
+    starsModal.classList.remove('hidden');
+  }
+  function closeStarsModal() { starsModal.classList.add('hidden'); }
+  starsModalClose.addEventListener('click', closeStarsModal);
+  starsModalBg.addEventListener('click', closeStarsModal);
 
   // Load initial snapshots
-  fetch('/api/snapshots').then(r => r.json()).then(d => renderSnapshots(d.latest || [], d.starred || null)).catch(() => {});
+  fetch('/api/snapshots').then(r => r.json()).then(d => renderSnapshots(d)).catch(() => {});
 
   // Handle snapshots pushed over WS
   // (hooked into the existing ws.onmessage handler)

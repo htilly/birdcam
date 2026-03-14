@@ -23,36 +23,39 @@
 
     <div class="stats-strip" id="stats-strip">
       <div class="stats-streams" id="stats-streams" title="Which cameras are live right now">
+        <img src="wifi.png" class="stat-icon-img" alt="">
         <span class="stats-label">Live now</span>
         <span class="stats-streams-list" id="stats-streams-list">—</span>
       </div>
       <div class="stat-item" id="stat-viewers" title="People watching right now">
-        <span class="stat-icon" aria-hidden="true">👀</span>
+        <img src="binocular.png" class="stat-icon-img" alt="">
         <span class="stat-value" id="stat-viewers-value">—</span>
         <span class="stat-label">people watching</span>
       </div>
       <div class="stat-item" id="stat-messages" title="Total messages in the chat">
-        <span class="stat-icon" aria-hidden="true">💬</span>
+        <img src="chat.png" class="stat-icon-img" alt="">
         <span class="stat-value" id="stat-messages-value">—</span>
         <span class="stat-label">messages in chat</span>
       </div>
       <div class="stat-item stat-last-visit" id="stat-last-visit" title="We remember when you were here last">
-        <span class="stat-icon" aria-hidden="true">🕐</span>
+        <img src="nest_bird.png" class="stat-icon-img" alt="">
         <span class="stat-value stat-last-visit-text" id="stat-last-visit-value">First time here?</span>
       </div>
     </div>
 
     <div class="main">
       <section class="video-section">
-        <div class="camera-tabs" id="camera-tabs" role="tablist"></div>
-        <div class="snapshot-strip" id="snapshot-strip"></div>
+        <div class="camera-tabs-row">
+          <button type="button" class="snap-btn" id="snap-btn" title="Take snapshot"><img src="cam.png" class="snap-btn-img" alt=""> Snap</button>
+          <div class="camera-tabs" id="camera-tabs" role="tablist"></div>
+          <div class="snapshot-strip" id="snapshot-strip"></div>
+        </div>
         <div class="video-wrap">
           <video id="video" muted autoplay playsinline></video>
           <div class="video-overlay" id="video-overlay">
             <p>Pick a camera above or add one in Admin.</p>
           </div>
           <button type="button" class="info-btn" id="info-btn" title="Stream info">i</button>
-          <button type="button" class="snap-btn" id="snap-btn" title="Take snapshot">📷</button>
           <div class="info-panel hidden" id="info-panel"></div>
         </div>
       </section>
@@ -63,7 +66,23 @@
         <div class="snap-lightbox-inner">
           <img id="snap-lightbox-img" src="" alt="Snapshot">
           <div id="snap-lightbox-caption"></div>
+          <div class="snap-lightbox-actions">
+            <button type="button" id="snap-lightbox-star" class="snap-lightbox-star hidden" title="Star this snapshot">⭐ Star</button>
+            <button type="button" id="snap-lightbox-delete" class="snap-lightbox-delete hidden" title="Delete snapshot">🗑 Delete</button>
+          </div>
           <button type="button" id="snap-lightbox-close">✕</button>
+        </div>
+      </div>
+
+      <!-- All-stars modal -->
+      <div id="stars-modal" class="stars-modal hidden">
+        <div class="stars-modal-bg"></div>
+        <div class="stars-modal-inner">
+          <div class="stars-modal-header">
+            <h2><img src="nest.png" class="chat-title-img" alt=""> All starred snapshots</h2>
+            <button type="button" id="stars-modal-close">✕</button>
+          </div>
+          <div class="stars-modal-grid" id="stars-modal-grid"></div>
         </div>
       </div>
 
@@ -78,7 +97,7 @@
       </aside>
 
       <aside class="chat-section">
-        <h2 class="chat-title">Chat</h2>
+        <h2 class="chat-title"><img src="chat.png" class="chat-title-img" alt="">Chat</h2>
         <div class="chat-messages" id="chat-messages"></div>
         <div class="chat-input-wrap">
           <input type="text" id="nickname" placeholder="Your name" maxlength="30" class="chat-nickname">

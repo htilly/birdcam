@@ -62,7 +62,8 @@ app.use(helmet({
   },
 }));
 
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
 // Session configuration
@@ -168,9 +169,12 @@ function getSnapshotLimiter() {
   return _snapshotLimiter;
 }
 
+function getSnapStripStarred() { return Math.max(0, Math.min(20, parseInt(db.getSetting('snap_strip_starred')) || 3)); }
+function getSnapStripTotal() { return Math.max(1, Math.min(20, parseInt(db.getSetting('snap_strip_total')) || 5)); }
+
 function buildSnapshotsPayload() {
-  const starred = db.getStarredSnapshot();
-  const latest = db.getLatestSnapshots(3);
+  const stripStarred = getSnapStripStarred();
+  const stripTotal = getSnapStripTotal();
   const toObj = s => ({
     id: s.id,
     url: `/snapshots/${s.filename}`,
@@ -179,9 +183,18 @@ function buildSnapshotsPayload() {
     created_at: s.created_at,
     starred: s.starred === 1 || s.starred === true,
   });
+  const starredSnaps = stripStarred > 0 ? db.getStarredSnapshots(stripStarred) : [];
+  const starredIds = new Set(starredSnaps.map(s => s.id));
+  const remaining = stripTotal - starredSnaps.length;
+  const latest = remaining > 0 ? db.getLatestSnapshots(stripTotal + starredSnaps.length)
+    .filter(s => !starredIds.has(s.id))
+    .slice(0, remaining) : [];
+  const allStarred = db.getAllStarredSnapshots().map(toObj);
   return {
-    starred: starred ? toObj(starred) : null,
+    starred: starredSnaps.map(toObj),
     latest: latest.map(toObj),
+    allStarred,
+    config: { stripStarred, stripTotal },
   };
 }
 
@@ -189,10 +202,14 @@ app.get('/api/snapshots', (req, res) => {
   res.json(buildSnapshotsPayload());
 });
 
+app.get('/api/admin/me', (req, res) => {
+  res.json({ isAdmin: !!(req.session && req.session.userId) });
+});
+
 const server = http.createServer(app);
 
 // --- WebSocket chat with rate limiting ---
-const chatMessages = [];
+const chatMessages = db.getChatMessages(100);
 const MAX_CHAT_MESSAGES = 100;
 function getChatRateLimit() { return parseInt(db.getSetting('chat_rate_limit')) || 5; }
 function getChatRateWindow() { return parseInt(db.getSetting('chat_rate_window_ms')) || 1000; }
@@ -251,6 +268,7 @@ wss.on('connection', (ws) => {
         if (!msg.nickname || !msg.text) return;
         chatMessages.push(msg);
         if (chatMessages.length > MAX_CHAT_MESSAGES) chatMessages.shift();
+        db.addChatMessage(msg.nickname, msg.text, msg.time);
         wss.clients.forEach((client) => {
           if (client.readyState === 1) client.send(JSON.stringify({ type: 'message', ...msg }));
         });
@@ -278,6 +296,34 @@ app.post('/api/snapshots', (req, res, next) => getSnapshotLimiter()(req, res, ne
     if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', ...payload }));
   });
   res.json({ ok: true, url: `/snapshots/${filename}` });
+});
+
+app.post('/api/admin/snapshots/:id/star', (req, res) => {
+  if (!req.session || !req.session.userId) return res.status(403).json({ error: 'Forbidden' });
+  const id = Number(req.params.id);
+  const starred = (req.body || {}).starred !== false && (req.body || {}).starred !== 'false';
+  db.setSnapshotStarred(id, starred);
+  const payload = buildSnapshotsPayload();
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', ...payload }));
+  });
+  res.json({ ok: true, starred });
+});
+
+app.post('/api/admin/snapshots/:id/delete', (req, res) => {
+  if (!req.session || !req.session.userId) return res.status(403).json({ error: 'Forbidden' });
+  const id = Number(req.params.id);
+  const snap = db.getSnapshot(id);
+  if (snap) {
+    const filePath = path.join(snapshotDir, snap.filename);
+    try { fs.unlinkSync(filePath); } catch (_) {}
+    db.deleteSnapshot(id);
+  }
+  const payload = buildSnapshotsPayload();
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', ...payload }));
+  });
+  res.json({ ok: true });
 });
 
 // --- Public stats API (after wss so handler can read viewer count and chat) ---

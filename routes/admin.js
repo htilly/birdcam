@@ -28,15 +28,13 @@ function friendlyDate(iso) {
 }
 
 // --- Simple CSRF using session-bound tokens ---
-function generateCsrfToken(req) {
-  const token = crypto.randomBytes(32).toString('hex');
-  req.session._csrf = token;
-  return token;
+function getCsrfToken(req) {
+  if (!req.session._csrf) req.session._csrf = crypto.randomBytes(32).toString('hex');
+  return req.session._csrf;
 }
 
 function csrfField(req) {
-  const token = generateCsrfToken(req);
-  return `<input type="hidden" name="_csrf" value="${token}">`;
+  return `<input type="hidden" name="_csrf" value="${getCsrfToken(req)}">`;
 }
 
 function verifyCsrf(req, res, next) {
@@ -47,7 +45,7 @@ function verifyCsrf(req, res, next) {
       <p>Your session may have expired. Please <a href="/admin">go back</a> and try again.</p>
     `));
   }
-  delete req.session._csrf;
+  // Don't delete token so multiple forms on the same page (e.g. star/delete per snapshot) all work
   next();
 }
 
@@ -712,6 +710,8 @@ router.get('/settings', requireLogin, (req, res) => {
   const chatRateWindow = settings.chat_rate_window_ms || '1000';
   const snapRateMax = settings.snapshot_rate_max || '6';
   const snapRateWindow = settings.snapshot_rate_window_sec || '60';
+  const snapStripStarred = settings.snap_strip_starred || '3';
+  const snapStripTotal = settings.snap_strip_total || '5';
   res.send(layout('Settings', nav('settings'), `
     <h1>Settings</h1>
     ${req.query.msg ? `<div class="admin-msg admin-msg-ok">${escapeHtml(req.query.msg)}</div>` : ''}
@@ -806,6 +806,24 @@ router.get('/settings', requireLogin, (req, res) => {
         <p class="field-hint">
           Maximum snapshots per IP within the time window.
           Default: 6 snapshots per 60 seconds.
+        </p>
+      </fieldset>
+      <fieldset class="settings-group">
+        <legend>Snapshot Strip</legend>
+        <div class="form-row">
+          <div>
+            <label for="snap-strip-starred">Starred snaps to show</label>
+            <input type="number" id="snap-strip-starred" name="snap_strip_starred" value="${escapeHtml(snapStripStarred)}" min="0" max="20">
+          </div>
+          <div>
+            <label for="snap-strip-total">Total snaps in strip</label>
+            <input type="number" id="snap-strip-total" name="snap_strip_total" value="${escapeHtml(snapStripTotal)}" min="1" max="20">
+          </div>
+        </div>
+        <p class="field-hint">
+          The strip always shows the N most recent starred snaps first, then fills the remaining slots with the latest unstarred snaps.
+          Viewers can also click "⭐ All stars" to browse all starred snaps.
+          Default: 3 starred + up to 5 total.
         </p>
       </fieldset>
       <div class="form-actions">
@@ -967,6 +985,8 @@ router.post('/settings', requireLogin, verifyCsrf, (req, res) => {
   const chatRateWindow = Math.max(100, Math.min(60000, parseInt(req.body.chat_rate_window_ms) || 1000));
   const snapRateMax = Math.max(1, Math.min(100, parseInt(req.body.snapshot_rate_max) || 6));
   const snapRateWindow = Math.max(10, Math.min(3600, parseInt(req.body.snapshot_rate_window_sec) || 60));
+  const snapStripStarred = Math.max(0, Math.min(20, parseInt(req.body.snap_strip_starred) || 3));
+  const snapStripTotal = Math.max(1, Math.min(20, parseInt(req.body.snap_strip_total) || 5));
   db.setSetting('login_rate_max', String(loginRateMax));
   db.setSetting('login_rate_window_min', String(loginRateWindow));
   db.setSetting('setup_rate_max', String(setupRateMax));
@@ -975,6 +995,8 @@ router.post('/settings', requireLogin, verifyCsrf, (req, res) => {
   db.setSetting('chat_rate_window_ms', String(chatRateWindow));
   db.setSetting('snapshot_rate_max', String(snapRateMax));
   db.setSetting('snapshot_rate_window_sec', String(snapRateWindow));
+  db.setSetting('snap_strip_starred', String(snapStripStarred));
+  db.setSetting('snap_strip_total', String(snapStripTotal));
   res.redirect('/admin/settings?msg=Settings+saved');
 });
 
