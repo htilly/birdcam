@@ -105,8 +105,10 @@ router.post('/:cameraId/stream', requireLogin, (req, res) => {
 });
 
 // DELETE /api/recordings/stream/:key  — stop a playback session
+const PLAYBACK_KEY_REGEX = /^pb-\d+-\d+$/;
 router.delete('/stream/:key', requireLogin, (req, res) => {
   const key = req.params.key;
+  if (!PLAYBACK_KEY_REGEX.test(key)) return res.status(400).json({ error: 'Invalid key' });
   const sess = playbackSessions.get(key);
   if (sess) stopPlayback(key, sess);
   res.json({ ok: true });

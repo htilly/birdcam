@@ -693,7 +693,9 @@ router.post('/snapshots/:id/delete', requireLogin, verifyCsrf, (req, res) => {
   const id = Number(req.params.id);
   const snap = db.getSnapshot(id);
   if (snap) {
-    const filePath = path.join(__dirname, '..', 'data', 'snapshots', snap.filename);
+    const base = path.basename(snap.filename);
+    if (base !== snap.filename || base.includes('..')) return res.redirect('/admin/snapshots');
+    const filePath = path.join(__dirname, '..', 'data', 'snapshots', base);
     try { fs.unlinkSync(filePath); } catch (_) {}
     db.deleteSnapshot(id);
   }
