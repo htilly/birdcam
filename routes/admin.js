@@ -101,7 +101,7 @@ router.get('/login', (req, res) => {
   if (!hasUser) return res.redirect('/admin/setup');
   res.send(layout('Login', '', `
     <div class="login-box">
-      <div class="login-icon">&#x1F426;</div>
+      <img src="/logo.png" alt="Birdcam Live" style="display:block;margin:0 auto 1rem;height:6rem;width:auto;">
       <h1>Log in to Birdcam</h1>
       ${req.query.msg ? `<div class="admin-msg">${escapeHtml(req.query.msg)}</div>` : ''}
       <form method="post" action="/admin/login" class="admin-form">
@@ -136,7 +136,7 @@ router.get('/logout', (req, res) => {
 router.get('/setup', requireSetup, (req, res) => {
   res.send(layout('Setup', '', `
     <div class="login-box">
-      <div class="login-icon">&#x1F426;</div>
+      <img src="/logo.png" alt="Birdcam Live" style="display:block;margin:0 auto 1rem;height:6rem;width:auto;">
       <h1>Welcome to Birdcam</h1>
       <p style="text-align:center;color:#718096;margin-bottom:1.5rem;">Create your admin account to get started.</p>
       <form method="post" action="/admin/setup" class="admin-form">
