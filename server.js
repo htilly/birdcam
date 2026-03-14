@@ -79,44 +79,28 @@ app.use(session({
   },
 }));
 
-// Rate limiting for login (reads settings from DB, recreates limiter when config changes)
-let _loginLimiter = null;
-let _loginLimiterKey = '';
-function getLoginLimiter() {
+// Rate limiting — create at startup, refresh in background when settings change
+function makeLoginLimiter() {
   const windowMin = parseInt(db.getSetting('login_rate_window_min')) || 15;
   const max = parseInt(db.getSetting('login_rate_max')) || 15;
-  const key = `${windowMin}:${max}`;
-  if (_loginLimiter && _loginLimiterKey === key) return _loginLimiter;
-  _loginLimiterKey = key;
-  _loginLimiter = rateLimit({
-    windowMs: windowMin * 60 * 1000,
-    max,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: 'Too many login attempts. Please try again later.',
-  });
-  return _loginLimiter;
+  return { limiter: rateLimit({ windowMs: windowMin * 60 * 1000, max, standardHeaders: true, legacyHeaders: false, message: 'Too many login attempts. Please try again later.' }), key: `${windowMin}:${max}` };
 }
-app.use('/admin/login', (req, res, next) => getLoginLimiter()(req, res, next));
-
-// Rate limiting for setup (reads settings from DB)
-let _setupLimiter = null;
-let _setupLimiterKey = '';
-function getSetupLimiter() {
+function makeSetupLimiter() {
   const windowMin = parseInt(db.getSetting('setup_rate_window_min')) || 15;
   const max = parseInt(db.getSetting('setup_rate_max')) || 10;
-  const key = `${windowMin}:${max}`;
-  if (_setupLimiter && _setupLimiterKey === key) return _setupLimiter;
-  _setupLimiterKey = key;
-  _setupLimiter = rateLimit({
-    windowMs: windowMin * 60 * 1000,
-    max,
-    standardHeaders: true,
-    legacyHeaders: false,
-  });
-  return _setupLimiter;
+  return { limiter: rateLimit({ windowMs: windowMin * 60 * 1000, max, standardHeaders: true, legacyHeaders: false }), key: `${windowMin}:${max}` };
 }
-app.use('/admin/setup', (req, res, next) => getSetupLimiter()(req, res, next));
+let _loginLimiterState = makeLoginLimiter();
+let _setupLimiterState = makeSetupLimiter();
+// Refresh limiters every 60s if settings changed (never recreate inside a request)
+setInterval(() => {
+  const login = makeLoginLimiter();
+  if (login.key !== _loginLimiterState.key) _loginLimiterState = login;
+  const setup = makeSetupLimiter();
+  if (setup.key !== _setupLimiterState.key) _setupLimiterState = setup;
+}, 60_000);
+app.use('/admin/login', (req, res, next) => _loginLimiterState.limiter(req, res, next));
+app.use('/admin/setup', (req, res, next) => _setupLimiterState.limiter(req, res, next));
 
 app.use(express.static(path.join(__dirname, 'public')));
 

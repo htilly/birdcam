@@ -76,15 +76,17 @@ function startStream(cameraId, rtspUrl) {
     console.error(`FFmpeg camera ${cameraId} error:`, err.message);
   });
   child.on('exit', (code, signal) => {
+    const wasIntentionalStop = stopping.has(cameraId);
     processes.delete(cameraId);
-    // Only auto-restart on unexpected exits (not intentional stops)
-    if (!stopping.has(cameraId) && code !== 0 && code !== null) {
-      setTimeout(() => {
-        const cam = db.getCamera(cameraId);
-        if (cam) startStream(cameraId, cam.rtsp_url);
-      }, 5000);
-    }
     stopping.delete(cameraId);
+    // Only auto-restart on unexpected failure (not intentional stop, not SIGTERM from shutdown)
+    if (wasIntentionalStop) return;
+    if (signal === 'SIGTERM') return; // container/process shutting down, don't restart
+    if (code === 0 && code !== null) return; // clean exit
+    setTimeout(() => {
+      const cam = db.getCamera(cameraId);
+      if (cam) startStream(cameraId, cam.rtsp_url);
+    }, 5000);
   });
   processes.set(cameraId, child);
   return child;
