@@ -1074,6 +1074,13 @@ body {
 
 /* Tablet & small desktop */
 @media (max-width: 900px) {
+  .app {
+    height: auto;
+    min-height: 100vh;
+  }
+  .main {
+    overflow: visible;
+  }
   .stats-strip {
     margin: 0 0.5rem 0.75rem;
     padding: 0.6rem 1rem;
@@ -1083,12 +1090,11 @@ body {
     flex-direction: column;
   }
   .video-section {
-    flex: 1 1 auto;
-    min-height: 0;
+    flex-shrink: 0;
   }
   .video-wrap {
-    flex: 1 1 auto;
-    min-height: 180px;
+    aspect-ratio: 16/9;
+    min-height: 200px;
   }
   .chat-section {
     width: 100%;
@@ -1129,12 +1135,11 @@ body {
   }
   .video-section {
     border-radius: var(--radius-sm);
-    flex: 1 1 auto;
-    min-height: 0;
+    flex-shrink: 0;
   }
   .video-wrap {
-    flex: 1 1 auto;
-    min-height: 200px;
+    aspect-ratio: 16/9;
+    min-height: 180px;
   }
   .camera-tabs {
     padding: 0.5rem;
@@ -1208,7 +1213,8 @@ body {
     gap: 0.35rem;
   }
   .video-wrap {
-    min-height: 180px;
+    aspect-ratio: 16/9;
+    min-height: 160px;
   }
   .chat-section {
     max-height: 260px;
