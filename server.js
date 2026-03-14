@@ -1,5 +1,6 @@
 require('dotenv').config();
 const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const session = require('express-session');
@@ -51,7 +52,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       imgSrc: ["'self'", "data:"],
@@ -137,9 +138,52 @@ app.get('/api/cameras', (req, res) => {
   res.json(cameras);
 });
 
+// Visitor tracking: set cookie if missing, record one visit per request (idempotent per page load)
+const VISITOR_COOKIE = 'bird_visitor';
+const VISITOR_MAX_AGE = 365 * 24 * 60 * 60 * 1000; // 1 year
+app.get('/api/visit', (req, res) => {
+  let id = req.cookies && req.cookies[VISITOR_COOKIE];
+  if (!id || typeof id !== 'string' || id.length > 128) {
+    id = crypto.randomUUID();
+    res.cookie(VISITOR_COOKIE, id, {
+      maxAge: VISITOR_MAX_AGE,
+      httpOnly: false,
+      sameSite: 'lax',
+      secure: db.isReverseProxy(),
+    });
+  }
+  db.recordVisit(id);
+  res.set('Cache-Control', 'no-store');
+  res.status(204).end();
+});
+
 app.use('/admin', adminRoutes);
 app.use(express.json());
 app.use('/api/recordings', recordingsRoutes);
+
+// --- Snapshots (static serving + GET; POST added after wss is created) ---
+const snapshotDir = path.join(__dirname, 'data', 'snapshots');
+fs.mkdirSync(snapshotDir, { recursive: true });
+app.use('/snapshots', express.static(snapshotDir));
+
+const snapshotLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 6,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: 'Too many snapshots. Please wait a moment.',
+});
+
+app.get('/api/snapshots', (req, res) => {
+  const snaps = db.getLatestSnapshots(3).map(s => ({
+    id: s.id,
+    url: `/snapshots/${s.filename}`,
+    nickname: s.nickname,
+    camera_name: s.camera_name,
+    created_at: s.created_at,
+  }));
+  res.json(snaps);
+});
 
 const server = http.createServer(app);
 
@@ -210,6 +254,29 @@ wss.on('connection', (ws) => {
       }
     } catch (_) {}
   });
+});
+
+// --- Snapshot POST (after wss so we can broadcast) ---
+app.post('/api/snapshots', snapshotLimiter, (req, res) => {
+  const { image, nickname, cameraName } = req.body || {};
+  if (!image || typeof image !== 'string') return res.status(400).json({ error: 'No image data' });
+  const match = image.match(/^data:image\/png;base64,(.+)$/);
+  if (!match) return res.status(400).json({ error: 'Invalid image format' });
+  const buf = Buffer.from(match[1], 'base64');
+  if (buf.length > 5 * 1024 * 1024) return res.status(413).json({ error: 'Image too large' });
+  const filename = `snap_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.png`;
+  fs.writeFileSync(path.join(snapshotDir, filename), buf);
+  const nick = String(nickname || 'Guest').slice(0, 30).trim() || 'Guest';
+  const cam = String(cameraName || '').slice(0, 60).trim();
+  db.addSnapshot(filename, nick, cam);
+  const snaps = db.getLatestSnapshots(3).map(s => ({
+    id: s.id, url: `/snapshots/${s.filename}`,
+    nickname: s.nickname, camera_name: s.camera_name, created_at: s.created_at,
+  }));
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', snapshots: snaps }));
+  });
+  res.json({ ok: true, url: `/snapshots/${filename}` });
 });
 
 // --- Public stats API (after wss so handler can read viewer count and chat) ---

@@ -105,6 +105,8 @@
           appendMessage(data);
         } else if (data.type === 'stats') {
           updateStatsFromPayload(data);
+        } else if (data.type === 'snapshots' && Array.isArray(data.snapshots)) {
+          renderSnapshots(data.snapshots);
         }
       } catch (_) {}
     };
@@ -301,6 +303,94 @@
   });
   document.addEventListener('click', () => emojiPickerEl.classList.add('hidden'));
   emojiPickerEl.addEventListener('click', (e) => e.stopPropagation());
+
+  // --- Snapshots ---
+  const snapBtn = document.getElementById('snap-btn');
+  const snapStrip = document.getElementById('snapshot-strip');
+  const snapLightbox = document.getElementById('snap-lightbox');
+  const snapLightboxImg = document.getElementById('snap-lightbox-img');
+  const snapLightboxCaption = document.getElementById('snap-lightbox-caption');
+  const snapLightboxClose = document.getElementById('snap-lightbox-close');
+  const snapLightboxBg = snapLightbox.querySelector('.snap-lightbox-bg');
+
+  function renderSnapshots(snaps) {
+    snapStrip.innerHTML = '';
+    if (!snaps || !snaps.length) return;
+    snaps.forEach(s => {
+      const thumb = document.createElement('div');
+      thumb.className = 'snap-thumb';
+      const img = document.createElement('img');
+      img.src = s.url;
+      img.alt = 'Snapshot by ' + s.nickname;
+      const cap = document.createElement('div');
+      cap.className = 'snap-thumb-caption';
+      const t = new Date(s.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      cap.textContent = s.nickname + ' · ' + t;
+      thumb.appendChild(img);
+      thumb.appendChild(cap);
+      thumb.addEventListener('click', () => openLightbox(s));
+      snapStrip.appendChild(thumb);
+    });
+    const label = document.createElement('span');
+    label.className = 'snap-strip-label';
+    label.textContent = '📷 Latest snaps';
+    snapStrip.appendChild(label);
+  }
+
+  function openLightbox(s) {
+    snapLightboxImg.src = s.url;
+    const t = new Date(s.created_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+    snapLightboxCaption.textContent = '📷 ' + s.nickname + (s.camera_name ? ' · ' + s.camera_name : '') + ' · ' + t;
+    snapLightbox.classList.remove('hidden');
+  }
+
+  function closeLightbox() { snapLightbox.classList.add('hidden'); }
+  snapLightboxClose.addEventListener('click', closeLightbox);
+  snapLightboxBg.addEventListener('click', closeLightbox);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+
+  // Load initial snapshots
+  fetch('/api/snapshots').then(r => r.json()).then(renderSnapshots).catch(() => {});
+
+  // Handle snapshots pushed over WS
+  // (hooked into the existing ws.onmessage handler)
+
+  snapBtn.addEventListener('click', () => {
+    if (!video.videoWidth) return;
+    const nick = myNickname();
+    const camName = cameras.find(c => c.id === selectedCameraId)?.display_name || '';
+
+    // Draw frame onto canvas with watermark
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+
+    // Watermark bar at bottom
+    const barH = Math.max(28, Math.round(canvas.height * 0.055));
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, canvas.height - barH, canvas.width, barH);
+    const fontSize = Math.max(12, Math.round(barH * 0.6));
+    ctx.font = `bold ${fontSize}px sans-serif`;
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    const timeStr = new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+    ctx.fillText('📷 ' + nick + (camName ? ' · ' + camName : '') + '  ' + timeStr, 10, canvas.height - barH / 2);
+
+    // Flash effect
+    snapBtn.classList.add('flash');
+    setTimeout(() => snapBtn.classList.remove('flash'), 200);
+
+    const image = canvas.toDataURL('image/png');
+    fetch('/api/snapshots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, nickname: nick, cameraName: camName }),
+    }).then(r => r.json()).then(data => {
+      if (data.error) console.warn('Snapshot error:', data.error);
+    }).catch(() => {});
+  });
 
   chatSend.addEventListener('click', sendMessage);
   chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMessage(); });

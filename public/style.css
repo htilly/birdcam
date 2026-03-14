@@ -282,6 +282,138 @@ body {
   display: none;
 }
 
+/* --- Snapshot strip --- */
+.snapshot-strip {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #0f172a;
+  min-height: 0;
+  flex-shrink: 0;
+  align-items: center;
+}
+.snapshot-strip:empty {
+  display: none;
+}
+.snap-thumb {
+  position: relative;
+  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 2px solid rgba(255,255,255,0.15);
+  transition: border-color 0.15s, transform 0.15s;
+  flex-shrink: 0;
+}
+.snap-thumb:hover {
+  border-color: var(--leaf);
+  transform: scale(1.04);
+}
+.snap-thumb img {
+  width: 90px;
+  height: 60px;
+  object-fit: cover;
+  display: block;
+}
+.snap-thumb-caption {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0,0,0,0.65);
+  color: #fff;
+  font-size: 0.6rem;
+  padding: 0.15rem 0.3rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.snap-strip-label {
+  color: rgba(255,255,255,0.4);
+  font-size: 0.75rem;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* --- Snapshot button --- */
+.snap-btn {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.6);
+  background: rgba(0,0,0,0.55);
+  font-size: 1.2rem;
+  cursor: pointer;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, transform 0.15s;
+  line-height: 1;
+}
+.snap-btn:hover {
+  background: var(--leaf);
+  border-color: var(--leaf);
+  transform: scale(1.1);
+}
+.snap-btn.flash {
+  background: #fff;
+  border-color: #fff;
+}
+
+/* --- Snapshot lightbox --- */
+.snap-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.snap-lightbox.hidden { display: none; }
+.snap-lightbox-bg {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  cursor: pointer;
+}
+.snap-lightbox-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+.snap-lightbox-inner img {
+  max-width: 100%;
+  max-height: 75vh;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+#snap-lightbox-caption {
+  color: rgba(255,255,255,0.85);
+  font-size: 0.9rem;
+  text-align: center;
+}
+#snap-lightbox-close {
+  position: absolute;
+  top: -1.5rem;
+  right: -1rem;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 1.4rem;
+  cursor: pointer;
+  line-height: 1;
+  opacity: 0.7;
+}
+#snap-lightbox-close:hover { opacity: 1; }
+
 .info-btn {
   position: absolute;
   top: 0.5rem;

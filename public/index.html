@@ -45,15 +45,27 @@
     <div class="main">
       <section class="video-section">
         <div class="camera-tabs" id="camera-tabs" role="tablist"></div>
+        <div class="snapshot-strip" id="snapshot-strip"></div>
         <div class="video-wrap">
           <video id="video" muted autoplay playsinline></video>
           <div class="video-overlay" id="video-overlay">
             <p>Pick a camera above or add one in Admin.</p>
           </div>
           <button type="button" class="info-btn" id="info-btn" title="Stream info">i</button>
+          <button type="button" class="snap-btn" id="snap-btn" title="Take snapshot">📷</button>
           <div class="info-panel hidden" id="info-panel"></div>
         </div>
       </section>
+
+      <!-- Snapshot lightbox -->
+      <div id="snap-lightbox" class="snap-lightbox hidden">
+        <div class="snap-lightbox-bg"></div>
+        <div class="snap-lightbox-inner">
+          <img id="snap-lightbox-img" src="" alt="Snapshot">
+          <div id="snap-lightbox-caption"></div>
+          <button type="button" id="snap-lightbox-close">✕</button>
+        </div>
+      </div>
 
       <aside class="recordings-panel hidden" id="recordings-panel">
         <h2 class="chat-title">Recordings</h2>

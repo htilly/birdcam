@@ -74,6 +74,34 @@ function migrate() {
   if (!tables) {
     d.exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
   }
+
+  // Snapshots
+  const snapshotsTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='snapshots'").get();
+  if (!snapshotsTable) {
+    d.exec(`
+      CREATE TABLE snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filename TEXT NOT NULL,
+        nickname TEXT NOT NULL,
+        camera_name TEXT NOT NULL DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+  }
+
+  // Visitor tracking for admin stats
+  const visitsTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='visits'").get();
+  if (!visitsTable) {
+    d.exec(`
+      CREATE TABLE visits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        visitor_key TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_visits_created_at ON visits(created_at);
+      CREATE INDEX idx_visits_visitor_key ON visits(visitor_key);
+    `);
+  }
 }
 
 // --- Settings ---
@@ -204,6 +232,53 @@ function deleteCamera(id) {
   getDb().prepare('DELETE FROM cameras WHERE id = ?').run(id);
 }
 
+// --- Snapshots ---
+function addSnapshot(filename, nickname, cameraName) {
+  getDb().prepare("INSERT INTO snapshots (filename, nickname, camera_name) VALUES (?, ?, ?)").run(filename, nickname, cameraName || '');
+}
+
+function getLatestSnapshots(limit = 3) {
+  return getDb().prepare("SELECT * FROM snapshots ORDER BY id DESC LIMIT ?").all(limit);
+}
+
+function getAllSnapshots(limit = 50) {
+  return getDb().prepare("SELECT * FROM snapshots ORDER BY id DESC LIMIT ?").all(limit);
+}
+
+function deleteSnapshot(id) {
+  return getDb().prepare("DELETE FROM snapshots WHERE id = ?").run(id);
+}
+
+// --- Visitor stats ---
+function recordVisit(visitorKey) {
+  if (!visitorKey || String(visitorKey).length > 128) return;
+  getDb().prepare('INSERT INTO visits (visitor_key, created_at) VALUES (?, datetime(\'now\'))').run(String(visitorKey));
+}
+
+function getVisitorStats() {
+  const d = getDb();
+  const uniqueToday = d.prepare(`
+    SELECT COUNT(DISTINCT visitor_key) as n FROM visits
+    WHERE date(created_at, 'localtime') = date('now', 'localtime')
+  `).get().n;
+  const uniqueWeek = d.prepare(`
+    SELECT COUNT(DISTINCT visitor_key) as n FROM visits
+    WHERE datetime(created_at) >= datetime('now', '-7 days')
+  `).get().n;
+  const uniqueMonth = d.prepare(`
+    SELECT COUNT(DISTINCT visitor_key) as n FROM visits
+    WHERE datetime(created_at) >= datetime('now', '-30 days')
+  `).get().n;
+  const daily = d.prepare(`
+    SELECT date(created_at, 'localtime') as date, COUNT(DISTINCT visitor_key) as count
+    FROM visits
+    WHERE datetime(created_at) >= datetime('now', '-30 days')
+    GROUP BY date(created_at, 'localtime')
+    ORDER BY date
+  `).all();
+  return { uniqueToday, uniqueWeek, uniqueMonth, daily };
+}
+
 module.exports = {
   getDb,
   init,
@@ -228,4 +303,10 @@ module.exports = {
   setSetting,
   getAllSettings,
   isReverseProxy,
+  recordVisit,
+  getVisitorStats,
+  addSnapshot,
+  getLatestSnapshots,
+  getAllSnapshots,
+  deleteSnapshot,
 };
