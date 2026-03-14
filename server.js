@@ -14,23 +14,23 @@ const adminRoutes = require('./routes/admin');
 const recordingsRoutes = require('./routes/recordings');
 
 const PORT = process.env.PORT || 3000;
-const IS_PROD = process.env.NODE_ENV === 'production';
-
-// Session secret: require explicit setting in production, random fallback in dev
-let SESSION_SECRET = process.env.SESSION_SECRET;
-if (!SESSION_SECRET) {
-  if (IS_PROD) {
-    console.error('FATAL: SESSION_SECRET must be set in production. Exiting.');
-    process.exit(1);
-  }
-  SESSION_SECRET = crypto.randomBytes(32).toString('hex');
-  console.warn('Warning: SESSION_SECRET not set. Using random secret (sessions will not survive restarts).');
-}
 
 db.getDb();
 db.migrate();
 if (process.env.ADMIN_USER && process.env.ADMIN_PASSWORD) {
   db.ensureAdmin(process.env.ADMIN_USER, process.env.ADMIN_PASSWORD);
+}
+
+// Session secret: use env var if set, otherwise persist a generated one in the DB
+// so it survives container restarts without requiring manual configuration.
+let SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) {
+  SESSION_SECRET = db.getSetting('session_secret');
+  if (!SESSION_SECRET) {
+    SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+    db.setSetting('session_secret', SESSION_SECRET);
+    console.log('Generated and persisted SESSION_SECRET to database.');
+  }
 }
 streamManager.startAll();
 
