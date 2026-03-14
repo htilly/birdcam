@@ -58,6 +58,7 @@ app.use(helmet({
       imgSrc: ["'self'", "data:"],
       connectSrc: ["'self'", "ws:", "wss:"],
       mediaSrc: ["'self'", "blob:"],
+      workerSrc: ["'self'", "blob:"],
     },
   },
 }));
