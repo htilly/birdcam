@@ -4,7 +4,6 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const router = express.Router();
 const db = require('../db');
-const { withSession } = require('../xmeye');
 const { requireLogin } = require('../middleware/auth');
 const hlsBaseDir = path.join(__dirname, '..', 'hls');
 
@@ -31,7 +30,7 @@ function stopPlayback(key, sess) {
 }
 
 // GET /api/recordings/:cameraId?date=YYYY-MM-DD
-router.get('/:cameraId', requireLogin, async (req, res) => {
+router.get('/:cameraId', requireLogin, (req, res) => {
   const cam = db.getCamera(Number(req.params.cameraId));
   if (!cam) return res.status(404).json({ error: 'Camera not found' });
 
@@ -40,39 +39,9 @@ router.get('/:cameraId', requireLogin, async (req, res) => {
     return res.status(400).json({ error: 'date param required (YYYY-MM-DD)' });
   }
 
-  const xmeyePassword = cam.xmeye_password || cam.rtsp_password || '';
   if (!cam.rtsp_host) return res.status(400).json({ error: 'Camera has no host configured' });
 
-  const start = new Date(dateStr + 'T00:00:00');
-  const end = new Date(dateStr + 'T23:59:59');
-
-  try {
-    const files = await withSession(
-      cam.rtsp_host,
-      34567,
-      cam.rtsp_username || 'admin',
-      xmeyePassword,
-      (sess) => sess.listFiles(0, start, end)
-    );
-
-    const clips = files.map((f, i) => {
-      const s = new Date(f.startTime);
-      const e = new Date(f.endTime);
-      const durationSec = Math.round((e - s) / 1000);
-      return {
-        index: i,
-        startTime: f.startTime,
-        endTime: f.endTime,
-        durationSec,
-        sizeMB: (f.size / 1024 / 1024).toFixed(1),
-        name: f.name,
-      };
-    });
-
-    res.json({ date: dateStr, cameraId: cam.id, clips });
-  } catch (err) {
-    res.status(502).json({ error: err.message });
-  }
+  res.status(501).json({ error: 'Recording listing not supported' });
 });
 
 // POST /api/recordings/:cameraId/stream  body: {startTime, endTime}
@@ -89,8 +58,6 @@ router.post('/:cameraId/stream', requireLogin, (req, res) => {
   const pbDir = path.join(hlsBaseDir, key);
   fs.mkdirSync(pbDir, { recursive: true });
 
-  // Format time for XMEye RTSP playback URL
-  // XMEye RTSP VoD: rtsp://user:pass@host:554/user=...&channel=1&stream=0.sdp?starttime=YYYYMMDDTHHMMSSz
   const fmtRtsp = (t) => {
     const d = new Date(t);
     const pad = (n) => String(n).padStart(2, '0');

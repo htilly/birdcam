@@ -308,12 +308,6 @@ router.get('/cameras/new', requireLogin, (req, res) => {
           </div>
         </div>
       </div>
-      <div class="form-section">
-        <p class="form-section-title">XMEye / Web access</p>
-        <label for="cam-xmeye">XMEye password</label>
-        <input type="password" id="cam-xmeye" name="xmeye_password" placeholder="Leave blank if same as RTSP" autocomplete="off">
-        <p class="field-hint">Only needed if your camera uses a different password for web/recording access.</p>
-      </div>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Add camera</button>
         <a href="/admin" class="btn btn-ghost">Cancel</a>
@@ -323,11 +317,11 @@ router.get('/cameras/new', requireLogin, (req, res) => {
 });
 
 router.post('/cameras', requireLogin, verifyCsrf, (req, res) => {
-  const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, xmeye_password } = req.body || {};
+  const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password } = req.body || {};
   if (!display_name || !rtsp_host) return res.redirect('/admin/cameras/new');
   const port = parseInt(rtsp_port) || 554;
   try {
-    const id = db.createCamera(display_name.trim(), rtsp_host.trim(), port, (rtsp_path || '').trim(), (rtsp_username || '').trim(), (rtsp_password || '').trim(), (xmeye_password || '').trim());
+    const id = db.createCamera(display_name.trim(), rtsp_host.trim(), port, (rtsp_path || '').trim(), (rtsp_username || '').trim(), (rtsp_password || '').trim());
     const cam = db.getCamera(id);
     streamManager.startStream(id, cam.rtsp_url);
     res.redirect('/admin');
@@ -340,7 +334,6 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
   const c = db.getCamera(Number(req.params.id));
   if (!c) return res.redirect('/admin');
   const hasRtspPw = c.rtsp_password ? true : false;
-  const hasXmeyePw = c.xmeye_password ? true : false;
   res.send(layout('Edit camera', nav('cameras'), `
     ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name) })}
     <h1>Edit camera</h1>
@@ -378,12 +371,6 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
           </div>
         </div>
       </div>
-      <div class="form-section">
-        <p class="form-section-title">XMEye / Web access</p>
-        <label for="cam-xmeye">XMEye password</label>
-        <input type="password" id="cam-xmeye" name="xmeye_password" placeholder="${hasXmeyePw ? '(unchanged)' : 'Leave blank if same as RTSP'}" autocomplete="off">
-        <p class="field-hint">${hasXmeyePw ? 'Leave blank to keep current XMEye password.' : 'Only needed if different from RTSP password.'}</p>
-      </div>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Save changes</button>
         <a href="/admin" class="btn btn-ghost">Cancel</a>
@@ -396,13 +383,12 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, (req, res) => {
   const id = Number(req.params.id);
   const c = db.getCamera(id);
   if (!c) return res.redirect('/admin');
-  const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, xmeye_password } = req.body || {};
+  const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password } = req.body || {};
   if (!display_name || !rtsp_host) return res.redirect(`/admin/cameras/${id}/edit`);
   const port = parseInt(rtsp_port) || 554;
   const password = rtsp_password || c.rtsp_password;
-  const xmeyePw = xmeye_password || c.xmeye_password || '';
   try {
-    db.updateCamera(id, display_name.trim(), rtsp_host.trim(), port, (rtsp_path || '').trim(), (rtsp_username || '').trim(), (password || '').trim(), xmeyePw.trim());
+    db.updateCamera(id, display_name.trim(), rtsp_host.trim(), port, (rtsp_path || '').trim(), (rtsp_username || '').trim(), (password || '').trim());
     streamManager.stopStream(id);
     const updated = db.getCamera(id);
     streamManager.startStream(id, updated.rtsp_url);
