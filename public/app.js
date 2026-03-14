@@ -110,6 +110,9 @@
   // Record visit for admin stats (cookie-based unique visitors)
   fetch('/api/visit', { credentials: 'include' }).catch(function () {});
 
+  const seenMsgKeys = new Set();
+  function msgKey(m) { return m.nickname + '|' + m.time + '|' + m.text; }
+
   function connectWs() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(protocol + '//' + location.host + '/ws');
@@ -117,9 +120,13 @@
       try {
         const data = JSON.parse(ev.data);
         if (data.type === 'history' && Array.isArray(data.messages)) {
-          data.messages.forEach((m) => appendMessage(m));
+          data.messages.forEach((m) => {
+            const k = msgKey(m);
+            if (!seenMsgKeys.has(k)) { seenMsgKeys.add(k); appendMessage(m); }
+          });
         } else if (data.type === 'message' && data.nickname && data.text) {
-          appendMessage(data);
+          const k = msgKey(data);
+          if (!seenMsgKeys.has(k)) { seenMsgKeys.add(k); appendMessage(data); }
         } else if (data.type === 'stats') {
           updateStatsFromPayload(data);
         } else if (data.type === 'snapshots') {
