@@ -78,23 +78,44 @@ app.use(session({
   },
 }));
 
-// Rate limiting for login
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 15, // 15 attempts per window
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: 'Too many login attempts. Please try again later.',
-});
-app.use('/admin/login', loginLimiter);
+// Rate limiting for login (reads settings from DB, recreates limiter when config changes)
+let _loginLimiter = null;
+let _loginLimiterKey = '';
+function getLoginLimiter() {
+  const windowMin = parseInt(db.getSetting('login_rate_window_min')) || 15;
+  const max = parseInt(db.getSetting('login_rate_max')) || 15;
+  const key = `${windowMin}:${max}`;
+  if (_loginLimiter && _loginLimiterKey === key) return _loginLimiter;
+  _loginLimiterKey = key;
+  _loginLimiter = rateLimit({
+    windowMs: windowMin * 60 * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: 'Too many login attempts. Please try again later.',
+  });
+  return _loginLimiter;
+}
+app.use('/admin/login', (req, res, next) => getLoginLimiter()(req, res, next));
 
-// Rate limiting for setup (prevent brute-force on first-run setup)
-app.use('/admin/setup', rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-}));
+// Rate limiting for setup (reads settings from DB)
+let _setupLimiter = null;
+let _setupLimiterKey = '';
+function getSetupLimiter() {
+  const windowMin = parseInt(db.getSetting('setup_rate_window_min')) || 15;
+  const max = parseInt(db.getSetting('setup_rate_max')) || 10;
+  const key = `${windowMin}:${max}`;
+  if (_setupLimiter && _setupLimiterKey === key) return _setupLimiter;
+  _setupLimiterKey = key;
+  _setupLimiter = rateLimit({
+    windowMs: windowMin * 60 * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  return _setupLimiter;
+}
+app.use('/admin/setup', (req, res, next) => getSetupLimiter()(req, res, next));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -125,8 +146,8 @@ const server = http.createServer(app);
 // --- WebSocket chat with rate limiting ---
 const chatMessages = [];
 const MAX_CHAT_MESSAGES = 100;
-const WS_RATE_LIMIT = 5; // max messages per second per client
-const WS_RATE_WINDOW = 1000; // 1 second window
+function getChatRateLimit() { return parseInt(db.getSetting('chat_rate_limit')) || 5; }
+function getChatRateWindow() { return parseInt(db.getSetting('chat_rate_window_ms')) || 1000; }
 
 function sanitizeChat(str) {
   return String(str)
@@ -165,8 +186,8 @@ wss.on('connection', (ws) => {
     try {
       // Rate limiting per connection
       const now = Date.now();
-      ws._msgTimestamps = ws._msgTimestamps.filter((t) => now - t < WS_RATE_WINDOW);
-      if (ws._msgTimestamps.length >= WS_RATE_LIMIT) {
+      ws._msgTimestamps = ws._msgTimestamps.filter((t) => now - t < getChatRateWindow());
+      if (ws._msgTimestamps.length >= getChatRateLimit()) {
         ws.send(JSON.stringify({ type: 'error', text: 'Slow down! Too many messages.' }));
         return;
       }

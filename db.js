@@ -80,6 +80,12 @@ function migrate() {
 const DEFAULT_SETTINGS = {
   reverse_proxy: 'false',
   require_auth_streams: 'false',
+  login_rate_window_min: '15',
+  login_rate_max: '15',
+  setup_rate_window_min: '15',
+  setup_rate_max: '10',
+  chat_rate_limit: '5',
+  chat_rate_window_ms: '1000',
 };
 
 function getSetting(key) {

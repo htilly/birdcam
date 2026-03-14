@@ -536,6 +536,12 @@ router.get('/settings', requireLogin, (req, res) => {
   const settings = db.getAllSettings();
   const reverseProxy = settings.reverse_proxy === 'true';
   const requireAuth = settings.require_auth_streams === 'true';
+  const loginRateWindow = settings.login_rate_window_min || '15';
+  const loginRateMax = settings.login_rate_max || '15';
+  const setupRateWindow = settings.setup_rate_window_min || '15';
+  const setupRateMax = settings.setup_rate_max || '10';
+  const chatRateLimit = settings.chat_rate_limit || '5';
+  const chatRateWindow = settings.chat_rate_window_ms || '1000';
   res.send(layout('Settings', nav('settings'), `
     <h1>Settings</h1>
     ${req.query.msg ? `<div class="admin-msg admin-msg-ok">${escapeHtml(req.query.msg)}</div>` : ''}
@@ -565,17 +571,219 @@ router.get('/settings', requireLogin, (req, res) => {
           When disabled, anyone with the URL can view the streams (public access).
         </p>
       </fieldset>
+      <fieldset class="settings-group">
+        <legend>Login Rate Limiting</legend>
+        <div class="form-row">
+          <div>
+            <label for="login-rate-max">Max attempts</label>
+            <input type="number" id="login-rate-max" name="login_rate_max" value="${escapeHtml(loginRateMax)}" min="1" max="1000">
+          </div>
+          <div>
+            <label for="login-rate-window">Window (minutes)</label>
+            <input type="number" id="login-rate-window" name="login_rate_window_min" value="${escapeHtml(loginRateWindow)}" min="1" max="1440">
+          </div>
+        </div>
+        <p class="field-hint">
+          Maximum number of login attempts per IP address within the time window.
+          Default: 15 attempts per 15 minutes.
+        </p>
+      </fieldset>
+      <fieldset class="settings-group">
+        <legend>Setup Rate Limiting</legend>
+        <div class="form-row">
+          <div>
+            <label for="setup-rate-max">Max attempts</label>
+            <input type="number" id="setup-rate-max" name="setup_rate_max" value="${escapeHtml(setupRateMax)}" min="1" max="1000">
+          </div>
+          <div>
+            <label for="setup-rate-window">Window (minutes)</label>
+            <input type="number" id="setup-rate-window" name="setup_rate_window_min" value="${escapeHtml(setupRateWindow)}" min="1" max="1440">
+          </div>
+        </div>
+        <p class="field-hint">
+          Rate limit for the initial setup page. Default: 10 attempts per 15 minutes.
+        </p>
+      </fieldset>
+      <fieldset class="settings-group">
+        <legend>Chat Rate Limiting</legend>
+        <div class="form-row">
+          <div>
+            <label for="chat-rate-limit">Max messages</label>
+            <input type="number" id="chat-rate-limit" name="chat_rate_limit" value="${escapeHtml(chatRateLimit)}" min="1" max="100">
+          </div>
+          <div>
+            <label for="chat-rate-window">Window (ms)</label>
+            <input type="number" id="chat-rate-window" name="chat_rate_window_ms" value="${escapeHtml(chatRateWindow)}" min="100" max="60000">
+          </div>
+        </div>
+        <p class="field-hint">
+          Maximum chat messages per user within the time window (WebSocket).
+          Default: 5 messages per 1000ms (1 second).
+        </p>
+      </fieldset>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Save settings</button>
         <a href="/admin" class="btn btn-ghost">Cancel</a>
       </div>
     </form>
+
+    <fieldset class="settings-group" style="margin-top:1.5rem;">
+      <legend>Debug</legend>
+      <div class="debug-build-info">
+        <span class="field-hint" style="padding-left:0;margin:0;">Build: <code>${escapeHtml(BUILD_TIME)}</code></span>
+      </div>
+      <label class="checkbox-label" style="margin-top:0.75rem;">
+        <input type="checkbox" id="debug-log-toggle">
+        Show live logs
+      </label>
+      <div id="debug-log-panel" style="display:none;margin-top:0.5rem;">
+        <div class="debug-controls" style="margin-bottom:0.5rem;">
+          <select id="debug-cam-select" class="debug-select">
+            <option value="all">All cameras</option>
+            ${db.listCameras().map(c => `<option value="${c.id}">${escapeHtml(c.display_name)} (cam-${c.id})</option>`).join('')}
+          </select>
+          <label class="debug-toggle"><input type="checkbox" id="debug-auto-scroll" checked> Auto-scroll</label>
+          <button type="button" class="btn btn-small" id="debug-clear-log">Clear</button>
+          <button type="button" class="btn btn-small btn-ghost" id="debug-detach-log">Detach</button>
+        </div>
+        <pre id="debug-log-output" class="debug-log"></pre>
+      </div>
+    </fieldset>
+
+    <!-- Detached floating log bar -->
+    <div id="debug-float-bar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:200;background:#1a202c;border-top:2px solid #2d3748;">
+      <div style="display:flex;align-items:center;gap:0.5rem;padding:0.4rem 0.75rem;border-bottom:1px solid #2d3748;">
+        <select id="debug-float-cam-select" class="debug-select" style="background:#2d3748;color:#e2e8f0;border-color:#4a5568;font-size:0.8rem;padding:0.2rem 0.4rem;"></select>
+        <label class="debug-toggle" style="color:#a0aec0;font-size:0.8rem;"><input type="checkbox" id="debug-float-auto-scroll" checked> Auto-scroll</label>
+        <button type="button" class="btn btn-small" id="debug-float-clear" style="font-size:0.75rem;padding:0.2rem 0.5rem;">Clear</button>
+        <button type="button" class="btn btn-small btn-ghost" id="debug-attach-log" style="font-size:0.75rem;padding:0.2rem 0.5rem;color:#a0aec0;">Attach</button>
+        <span style="margin-left:auto;font-size:0.75rem;color:#718096;">Live logs</span>
+      </div>
+      <pre id="debug-float-log" style="background:#1a202c;color:#68d391;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:0.78rem;padding:0.5rem 0.75rem;margin:0;max-height:35vh;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.4;"></pre>
+    </div>
+
+    <script>
+    (function() {
+      const toggle = document.getElementById('debug-log-toggle');
+      const panel = document.getElementById('debug-log-panel');
+      const logEl = document.getElementById('debug-log-output');
+      const camSelect = document.getElementById('debug-cam-select');
+      const autoScroll = document.getElementById('debug-auto-scroll');
+      const clearBtn = document.getElementById('debug-clear-log');
+      const detachBtn = document.getElementById('debug-detach-log');
+
+      const floatBar = document.getElementById('debug-float-bar');
+      const floatLog = document.getElementById('debug-float-log');
+      const floatCamSelect = document.getElementById('debug-float-cam-select');
+      const floatAutoScroll = document.getElementById('debug-float-auto-scroll');
+      const floatClearBtn = document.getElementById('debug-float-clear');
+      const attachBtn = document.getElementById('debug-attach-log');
+
+      // Populate float cam select with same options
+      floatCamSelect.innerHTML = camSelect.innerHTML;
+
+      let polling = null;
+      let detached = false;
+
+      function escLog(s) {
+        const el = document.createElement('span');
+        el.textContent = s;
+        return el.innerHTML;
+      }
+
+      function renderLogs(data, cam, target, scrollCheck) {
+        let text = '';
+        if (cam === 'all') {
+          for (const [id, lines] of Object.entries(data)) {
+            if (lines.length) {
+              text += '=== Camera ' + id + ' ===\\n';
+              text += lines.map(l => escLog(l)).join('\\n') + '\\n\\n';
+            }
+          }
+        } else {
+          text = (data.lines || []).map(l => escLog(l)).join('\\n');
+        }
+        target.innerHTML = text || 'No log output yet.';
+        if (scrollCheck.checked) target.scrollTop = target.scrollHeight;
+      }
+
+      function fetchLogs() {
+        const cam = detached ? floatCamSelect.value : camSelect.value;
+        const url = cam === 'all' ? '/admin/api/logs' : '/admin/api/logs/' + cam;
+        fetch(url).then(r => r.json()).then(data => {
+          if (detached) {
+            renderLogs(data, cam, floatLog, floatAutoScroll);
+          } else {
+            renderLogs(data, cam, logEl, autoScroll);
+          }
+        }).catch(() => {});
+      }
+
+      function startPolling() {
+        if (polling) clearInterval(polling);
+        fetchLogs();
+        polling = setInterval(fetchLogs, 3000);
+      }
+
+      function stopPolling() {
+        if (polling) { clearInterval(polling); polling = null; }
+      }
+
+      toggle.addEventListener('change', () => {
+        if (toggle.checked) {
+          panel.style.display = '';
+          startPolling();
+        } else {
+          panel.style.display = 'none';
+          if (!detached) stopPolling();
+        }
+      });
+
+      detachBtn.addEventListener('click', () => {
+        detached = true;
+        panel.style.display = 'none';
+        floatBar.style.display = '';
+        floatCamSelect.value = camSelect.value;
+        startPolling();
+      });
+
+      attachBtn.addEventListener('click', () => {
+        detached = false;
+        floatBar.style.display = 'none';
+        if (toggle.checked) {
+          panel.style.display = '';
+          camSelect.value = floatCamSelect.value;
+          startPolling();
+        } else {
+          stopPolling();
+        }
+      });
+
+      camSelect.addEventListener('change', fetchLogs);
+      floatCamSelect.addEventListener('change', fetchLogs);
+      clearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
+      floatClearBtn.addEventListener('click', () => { floatLog.innerHTML = ''; });
+    })();
+    </script>
   `));
 });
 
 router.post('/settings', requireLogin, verifyCsrf, (req, res) => {
   db.setSetting('reverse_proxy', req.body.reverse_proxy === 'true' ? 'true' : 'false');
   db.setSetting('require_auth_streams', req.body.require_auth_streams === 'true' ? 'true' : 'false');
+  // Rate limit settings (clamp to safe ranges)
+  const loginRateMax = Math.max(1, Math.min(1000, parseInt(req.body.login_rate_max) || 15));
+  const loginRateWindow = Math.max(1, Math.min(1440, parseInt(req.body.login_rate_window_min) || 15));
+  const setupRateMax = Math.max(1, Math.min(1000, parseInt(req.body.setup_rate_max) || 10));
+  const setupRateWindow = Math.max(1, Math.min(1440, parseInt(req.body.setup_rate_window_min) || 15));
+  const chatRateLimit = Math.max(1, Math.min(100, parseInt(req.body.chat_rate_limit) || 5));
+  const chatRateWindow = Math.max(100, Math.min(60000, parseInt(req.body.chat_rate_window_ms) || 1000));
+  db.setSetting('login_rate_max', String(loginRateMax));
+  db.setSetting('login_rate_window_min', String(loginRateWindow));
+  db.setSetting('setup_rate_max', String(setupRateMax));
+  db.setSetting('setup_rate_window_min', String(setupRateWindow));
+  db.setSetting('chat_rate_limit', String(chatRateLimit));
+  db.setSetting('chat_rate_window_ms', String(chatRateWindow));
   res.redirect('/admin/settings?msg=Settings+saved');
 });
 

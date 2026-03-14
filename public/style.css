@@ -376,6 +376,7 @@ body {
   background: var(--cream);
   border-top: 2px solid #e7e5e4;
   position: relative;
+  min-width: 0;
 }
 
 .chat-nickname {
@@ -391,10 +392,13 @@ body {
 .chat-row {
   display: flex;
   gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
 }
 
 .chat-input {
   flex: 1;
+  min-width: 0;
   padding: 0.6rem 0.75rem;
   border: 2px solid #e7e5e4;
   border-radius: var(--radius-sm);
@@ -414,6 +418,9 @@ body {
   padding: 0.6rem 1rem;
   border: none;
   border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  white-space: nowrap;
+  min-width: 4.5em;
   background: var(--leaf);
   color: var(--white);
   cursor: pointer;
