@@ -9,49 +9,126 @@ const stopping = new Set(); // tracks intentional stops to prevent auto-restart
 const MAX_LOG_LINES = 200;
 const logs = new Map(); // cameraId -> string[]
 
+const DEFAULT_FFMPEG_OPTIONS = {
+  rtsp_transport: 'tcp',
+  reconnect: 1,
+  reconnect_streamed: 1,
+  reconnect_delay_max: 5,
+  fflags: 'flush_packets',
+  max_delay: 2,
+  flags: '-global_header',
+  video_codec: 'libx264',
+  preset: 'ultrafast',
+  tune: 'zerolatency',
+  crf: 28,
+  pix_fmt: 'yuv420p',
+  g: 16,
+  keyint_min: 8,
+  force_key_frames: 'expr:gte(t,n_forced*2)',
+  audio_codec: 'aac',
+  audio_channels: 1,
+  audio_sample_rate: 44100,
+  hls_time: 2,
+  hls_list_size: 3,
+  hls_flags: 'delete_segments+append_list',
+  extra_input_args: '',
+  extra_output_args: '',
+};
+
 function ensureHlsDir() {
   fs.mkdirSync(hlsDir, { recursive: true });
 }
 
-function startStream(cameraId, rtspUrl) {
-  // Validate RTSP URL scheme
+function parseFfmpegOptions(camera) {
+  const raw = camera.ffmpeg_options;
+  if (!raw) return { ...DEFAULT_FFMPEG_OPTIONS };
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return { ...DEFAULT_FFMPEG_OPTIONS, ...parsed };
+  } catch (_) {
+    return { ...DEFAULT_FFMPEG_OPTIONS };
+  }
+}
+
+function pushOpt(args, key, value) {
+  if (value === undefined || value === null || value === '') return;
+  args.push(key);
+  const s = String(value);
+  if (s !== '') args.push(s);
+}
+
+function parseExtraArgs(str) {
+  if (!str || typeof str !== 'string') return [];
+  return str.trim().split(/\s+/).filter(Boolean);
+}
+
+function buildFfmpegArgs(rtspUrl, outBase, options) {
+  const o = { ...DEFAULT_FFMPEG_OPTIONS, ...options };
+  const args = [];
+
+  pushOpt(args, '-rtsp_transport', o.rtsp_transport);
+  pushOpt(args, '-i', rtspUrl);
+  pushOpt(args, '-reconnect', o.reconnect);
+  pushOpt(args, '-reconnect_streamed', o.reconnect_streamed);
+  pushOpt(args, '-reconnect_delay_max', o.reconnect_delay_max);
+  pushOpt(args, '-fflags', o.fflags);
+  pushOpt(args, '-max_delay', o.max_delay);
+  pushOpt(args, '-flags', o.flags);
+
+  const extraInput = parseExtraArgs(o.extra_input_args);
+  for (let i = 0; i < extraInput.length; i++) args.push(extraInput[i]);
+
+  if (o.video_codec === 'copy') {
+    pushOpt(args, '-c:v', 'copy');
+  } else {
+    pushOpt(args, '-c:v', o.video_codec || 'libx264');
+    pushOpt(args, '-preset', o.preset);
+    pushOpt(args, '-tune', o.tune);
+    pushOpt(args, '-crf', o.crf);
+    pushOpt(args, '-pix_fmt', o.pix_fmt);
+    pushOpt(args, '-g', o.g);
+    pushOpt(args, '-keyint_min', o.keyint_min);
+    pushOpt(args, '-force_key_frames', o.force_key_frames);
+  }
+
+  if (o.audio_codec && o.audio_codec !== 'none') {
+    pushOpt(args, '-c:a', o.audio_codec);
+    pushOpt(args, '-ac', o.audio_channels);
+    pushOpt(args, '-ar', o.audio_sample_rate);
+  } else if (o.audio_codec === 'none') {
+    pushOpt(args, '-an');
+  } else {
+    pushOpt(args, '-c:a', 'aac');
+    pushOpt(args, '-ac', o.audio_channels ?? 1);
+    pushOpt(args, '-ar', o.audio_sample_rate ?? 44100);
+  }
+
+  pushOpt(args, '-f', 'hls');
+  pushOpt(args, '-hls_time', o.hls_time);
+  pushOpt(args, '-hls_list_size', o.hls_list_size);
+  pushOpt(args, '-hls_flags', o.hls_flags);
+  pushOpt(args, '-hls_segment_filename', `${outBase}-%03d.ts`);
+
+  const extraOutput = parseExtraArgs(o.extra_output_args);
+  for (let i = 0; i < extraOutput.length; i++) args.push(extraOutput[i]);
+
+  args.push(`${outBase}.m3u8`);
+  return args;
+}
+
+function startStream(cameraId, camera) {
+  const rtspUrl = typeof camera === 'string' ? camera : camera.rtsp_url;
   if (!db.validateRtspUrl(rtspUrl)) {
     console.error(`Camera ${cameraId}: refusing to start — invalid RTSP URL`);
     return null;
   }
 
   stopStream(cameraId);
-  stopping.delete(cameraId); // clear stop flag since we're intentionally starting
+  stopping.delete(cameraId);
   ensureHlsDir();
   const outBase = path.join(hlsDir, `cam-${cameraId}`);
-  const outM3u8 = `${outBase}.m3u8`;
-  const args = [
-    '-rtsp_transport', 'tcp',
-    '-i', rtspUrl,
-    '-reconnect', '1',
-    '-reconnect_streamed', '1',
-    '-reconnect_delay_max', '5',
-    '-fflags', 'flush_packets',
-    '-max_delay', '2',
-    '-flags', '-global_header',
-    '-c:v', 'libx264',
-    '-preset', 'ultrafast',
-    '-tune', 'zerolatency',
-    '-crf', '28',
-    '-pix_fmt', 'yuv420p',
-    '-g', '16',
-    '-keyint_min', '8',
-    '-force_key_frames', 'expr:gte(t,n_forced*2)',
-    '-c:a', 'aac',
-    '-ac', '1',
-    '-ar', '44100',
-    '-f', 'hls',
-    '-hls_time', '2',
-    '-hls_list_size', '3',
-    '-hls_flags', 'delete_segments+append_list',
-    '-hls_segment_filename', `${outBase}-%03d.ts`,
-    outM3u8,
-  ];
+  const options = typeof camera === 'string' ? {} : parseFfmpegOptions(camera);
+  const args = buildFfmpegArgs(rtspUrl, outBase, options);
   const child = spawn('ffmpeg', args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
@@ -85,7 +162,7 @@ function startStream(cameraId, rtspUrl) {
     if (code === 0 && code !== null) return; // clean exit
     setTimeout(() => {
       const cam = db.getCamera(cameraId);
-      if (cam) startStream(cameraId, cam.rtsp_url);
+      if (cam) startStream(cameraId, cam);
     }, 5000);
   });
   processes.set(cameraId, child);
@@ -120,7 +197,7 @@ function stopAll() {
 
 function startAll() {
   const cameras = db.listCameras();
-  for (const c of cameras) startStream(c.id, c.rtsp_url);
+  for (const c of cameras) startStream(c.id, c);
 }
 
 function isRunning(cameraId) {
@@ -158,4 +235,6 @@ module.exports = {
   getAllLogs,
   getStreamInfo,
   hlsDir,
+  DEFAULT_FFMPEG_OPTIONS,
+  parseFfmpegOptions,
 };

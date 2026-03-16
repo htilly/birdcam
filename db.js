@@ -34,6 +34,7 @@ function init() {
       rtsp_path TEXT NOT NULL DEFAULT '',
       rtsp_username TEXT NOT NULL DEFAULT '',
       rtsp_password TEXT NOT NULL DEFAULT '',
+      ffmpeg_options TEXT DEFAULT '{}',
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
@@ -64,6 +65,12 @@ function migrate() {
       } catch (_) {}
     }
   }
+  // FFmpeg options per camera (JSON)
+  const camCols = d.prepare("PRAGMA table_info(cameras)").all().map(c => c.name);
+  if (!camCols.includes('ffmpeg_options')) {
+    d.exec(`ALTER TABLE cameras ADD COLUMN ffmpeg_options TEXT DEFAULT '{}'`);
+  }
+
   // Ensure settings table exists (for upgrades from older versions)
   const tables = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'").get();
   if (!tables) {
@@ -224,26 +231,35 @@ function getCamera(id) {
   return getDb().prepare('SELECT * FROM cameras WHERE id = ?').get(id);
 }
 
-function createCamera(display_name, host, port, urlPath, username, password) {
+function createCamera(display_name, host, port, urlPath, username, password, ffmpegOptionsJson = '{}') {
   const d = getDb();
   const rtsp_url = buildRtspUrl(host, port, urlPath, username, password);
   if (!validateRtspUrl(rtsp_url)) {
     throw new Error('Invalid RTSP URL — only rtsp:// URLs are allowed');
   }
+  const opts = typeof ffmpegOptionsJson === 'string' ? ffmpegOptionsJson : JSON.stringify(ffmpegOptionsJson || {});
   const r = d.prepare(
-    "INSERT INTO cameras (display_name, rtsp_url, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))"
-  ).run(display_name, rtsp_url, host, port, urlPath, username, password);
+    "INSERT INTO cameras (display_name, rtsp_url, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, ffmpeg_options, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))"
+  ).run(display_name, rtsp_url, host, port, urlPath, username, password, opts);
   return r.lastInsertRowid;
 }
 
-function updateCamera(id, display_name, host, port, urlPath, username, password) {
+function updateCamera(id, display_name, host, port, urlPath, username, password, ffmpegOptionsJson = null) {
   const rtsp_url = buildRtspUrl(host, port, urlPath, username, password);
   if (!validateRtspUrl(rtsp_url)) {
     throw new Error('Invalid RTSP URL — only rtsp:// URLs are allowed');
   }
-  getDb().prepare(
-    "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, updated_at = datetime('now') WHERE id = ?"
-  ).run(display_name, rtsp_url, host, port, urlPath, username, password, id);
+  const d = getDb();
+  if (ffmpegOptionsJson !== null && ffmpegOptionsJson !== undefined) {
+    const opts = typeof ffmpegOptionsJson === 'string' ? ffmpegOptionsJson : JSON.stringify(ffmpegOptionsJson || {});
+    d.prepare(
+      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, ffmpeg_options = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(display_name, rtsp_url, host, port, urlPath, username, password, opts, id);
+  } else {
+    d.prepare(
+      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(display_name, rtsp_url, host, port, urlPath, username, password, id);
+  }
 }
 
 function deleteCamera(id) {

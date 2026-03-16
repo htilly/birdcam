@@ -7,6 +7,180 @@ const router = express.Router();
 const db = require('../db');
 const streamManager = require('../streamManager');
 const { requireLogin, requireSetup, requireNoSetup } = require('../middleware/auth');
+const { DEFAULT_FFMPEG_OPTIONS } = streamManager;
+
+function getFfmpegOptsForForm(camera) {
+  const def = { ...DEFAULT_FFMPEG_OPTIONS };
+  if (!camera || !camera.ffmpeg_options) return def;
+  try {
+    const parsed = typeof camera.ffmpeg_options === 'string' ? JSON.parse(camera.ffmpeg_options) : camera.ffmpeg_options;
+    return { ...def, ...parsed };
+  } catch (_) {
+    return def;
+  }
+}
+
+function ffmpegOptionsFromBody(body) {
+  const o = {};
+  if (body.ffmpeg_rtsp_transport != null) o.rtsp_transport = body.ffmpeg_rtsp_transport;
+  if (body.ffmpeg_reconnect != null) o.reconnect = body.ffmpeg_reconnect === '' ? DEFAULT_FFMPEG_OPTIONS.reconnect : Number(body.ffmpeg_reconnect) || 1;
+  if (body.ffmpeg_reconnect_streamed != null) o.reconnect_streamed = body.ffmpeg_reconnect_streamed === '' ? DEFAULT_FFMPEG_OPTIONS.reconnect_streamed : Number(body.ffmpeg_reconnect_streamed) || 1;
+  if (body.ffmpeg_reconnect_delay_max != null) o.reconnect_delay_max = body.ffmpeg_reconnect_delay_max === '' ? DEFAULT_FFMPEG_OPTIONS.reconnect_delay_max : Number(body.ffmpeg_reconnect_delay_max) || 5;
+  if (body.ffmpeg_fflags != null) o.fflags = body.ffmpeg_fflags;
+  if (body.ffmpeg_max_delay != null) o.max_delay = body.ffmpeg_max_delay === '' ? DEFAULT_FFMPEG_OPTIONS.max_delay : Number(body.ffmpeg_max_delay) || 2;
+  if (body.ffmpeg_flags != null) o.flags = body.ffmpeg_flags;
+  if (body.ffmpeg_video_codec != null) o.video_codec = body.ffmpeg_video_codec;
+  if (body.ffmpeg_preset != null) o.preset = body.ffmpeg_preset;
+  if (body.ffmpeg_tune != null) o.tune = body.ffmpeg_tune;
+  if (body.ffmpeg_crf != null) o.crf = body.ffmpeg_crf === '' ? DEFAULT_FFMPEG_OPTIONS.crf : Number(body.ffmpeg_crf);
+  if (body.ffmpeg_pix_fmt != null) o.pix_fmt = body.ffmpeg_pix_fmt;
+  if (body.ffmpeg_g != null) o.g = body.ffmpeg_g === '' ? DEFAULT_FFMPEG_OPTIONS.g : Number(body.ffmpeg_g) || 16;
+  if (body.ffmpeg_keyint_min != null) o.keyint_min = body.ffmpeg_keyint_min === '' ? DEFAULT_FFMPEG_OPTIONS.keyint_min : Number(body.ffmpeg_keyint_min) || 8;
+  if (body.ffmpeg_force_key_frames != null) o.force_key_frames = body.ffmpeg_force_key_frames;
+  if (body.ffmpeg_audio_codec != null) o.audio_codec = body.ffmpeg_audio_codec;
+  if (body.ffmpeg_audio_channels != null) o.audio_channels = body.ffmpeg_audio_channels === '' ? 1 : Number(body.ffmpeg_audio_channels) || 1;
+  if (body.ffmpeg_audio_sample_rate != null) o.audio_sample_rate = body.ffmpeg_audio_sample_rate === '' ? 44100 : Number(body.ffmpeg_audio_sample_rate) || 44100;
+  if (body.ffmpeg_hls_time != null) o.hls_time = body.ffmpeg_hls_time === '' ? 2 : Number(body.ffmpeg_hls_time) || 2;
+  if (body.ffmpeg_hls_list_size != null) o.hls_list_size = body.ffmpeg_hls_list_size === '' ? 3 : Number(body.ffmpeg_hls_list_size) || 3;
+  if (body.ffmpeg_hls_flags != null) o.hls_flags = body.ffmpeg_hls_flags;
+  if (body.ffmpeg_extra_input_args != null) o.extra_input_args = body.ffmpeg_extra_input_args;
+  if (body.ffmpeg_extra_output_args != null) o.extra_output_args = body.ffmpeg_extra_output_args;
+  return o;
+}
+
+function ffmpegFormSection(opts) {
+  const v = (key) => escapeHtml(String(opts[key] ?? ''));
+  return `
+      <div class="form-section">
+        <p class="form-section-title">FFmpeg / Stream options</p>
+        <p class="field-hint" style="margin-bottom:0.75rem;">Override defaults for this camera. Leave defaults for typical IP cameras.</p>
+        <div class="form-row">
+          <div>
+            <label for="ffmpeg-rtsp-transport">RTSP transport</label>
+            <select id="ffmpeg-rtsp-transport" name="ffmpeg_rtsp_transport">
+              <option value="tcp" ${opts.rtsp_transport === 'tcp' ? 'selected' : ''}>tcp</option>
+              <option value="udp" ${opts.rtsp_transport === 'udp' ? 'selected' : ''}>udp</option>
+              <option value="http" ${opts.rtsp_transport === 'http' ? 'selected' : ''}>http</option>
+            </select>
+          </div>
+          <div>
+            <label for="ffmpeg-reconnect">Reconnect</label>
+            <input type="number" id="ffmpeg-reconnect" name="ffmpeg_reconnect" value="${v('reconnect')}" min="0" placeholder="1">
+          </div>
+          <div>
+            <label for="ffmpeg-reconnect-streamed">Reconnect streamed</label>
+            <input type="number" id="ffmpeg-reconnect-streamed" name="ffmpeg_reconnect_streamed" value="${v('reconnect_streamed')}" min="0" placeholder="1">
+          </div>
+          <div>
+            <label for="ffmpeg-reconnect-delay-max">Reconnect delay max (s)</label>
+            <input type="number" id="ffmpeg-reconnect-delay-max" name="ffmpeg_reconnect_delay_max" value="${v('reconnect_delay_max')}" min="0" placeholder="5">
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <label for="ffmpeg-fflags">Input fflags</label>
+            <input type="text" id="ffmpeg-fflags" name="ffmpeg_fflags" value="${v('fflags')}" placeholder="flush_packets">
+          </div>
+          <div>
+            <label for="ffmpeg-max-delay">Max delay (s)</label>
+            <input type="number" id="ffmpeg-max-delay" name="ffmpeg_max_delay" value="${v('max_delay')}" placeholder="2">
+          </div>
+          <div>
+            <label for="ffmpeg-flags">Flags</label>
+            <input type="text" id="ffmpeg-flags" name="ffmpeg_flags" value="${v('flags')}" placeholder="-global_header">
+          </div>
+        </div>
+        <p class="form-section-title" style="margin-top:1rem;">Video</p>
+        <div class="form-row">
+          <div>
+            <label for="ffmpeg-video-codec">Video codec</label>
+            <select id="ffmpeg-video-codec" name="ffmpeg_video_codec">
+              <option value="libx264" ${opts.video_codec === 'libx264' ? 'selected' : ''}>libx264 (re-encode)</option>
+              <option value="copy" ${opts.video_codec === 'copy' ? 'selected' : ''}>copy (passthrough)</option>
+            </select>
+          </div>
+          <div>
+            <label for="ffmpeg-preset">Preset</label>
+            <select id="ffmpeg-preset" name="ffmpeg_preset">
+              <option value="ultrafast" ${opts.preset === 'ultrafast' ? 'selected' : ''}>ultrafast</option>
+              <option value="superfast" ${opts.preset === 'superfast' ? 'selected' : ''}>superfast</option>
+              <option value="veryfast" ${opts.preset === 'veryfast' ? 'selected' : ''}>veryfast</option>
+              <option value="fast" ${opts.preset === 'fast' ? 'selected' : ''}>fast</option>
+              <option value="medium" ${opts.preset === 'medium' ? 'selected' : ''}>medium</option>
+              <option value="slow" ${opts.preset === 'slow' ? 'selected' : ''}>slow</option>
+            </select>
+          </div>
+          <div>
+            <label for="ffmpeg-tune">Tune</label>
+            <input type="text" id="ffmpeg-tune" name="ffmpeg_tune" value="${v('tune')}" placeholder="zerolatency">
+          </div>
+          <div>
+            <label for="ffmpeg-crf">CRF (0–51)</label>
+            <input type="number" id="ffmpeg-crf" name="ffmpeg_crf" value="${v('crf')}" min="0" max="51" placeholder="28">
+          </div>
+          <div>
+            <label for="ffmpeg-pix-fmt">Pixel format</label>
+            <input type="text" id="ffmpeg-pix-fmt" name="ffmpeg_pix_fmt" value="${v('pix_fmt')}" placeholder="yuv420p">
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <label for="ffmpeg-g">GOP size (keyframe interval)</label>
+            <input type="number" id="ffmpeg-g" name="ffmpeg_g" value="${v('g')}" min="1" placeholder="16">
+          </div>
+          <div>
+            <label for="ffmpeg-keyint-min">Keyint min</label>
+            <input type="number" id="ffmpeg-keyint-min" name="ffmpeg_keyint_min" value="${v('keyint_min')}" min="1" placeholder="8">
+          </div>
+          <div style="flex:1;">
+            <label for="ffmpeg-force-key-frames">Force key frames</label>
+            <input type="text" id="ffmpeg-force-key-frames" name="ffmpeg_force_key_frames" value="${v('force_key_frames')}" placeholder="expr:gte(t,n_forced*2)">
+          </div>
+        </div>
+        <p class="form-section-title" style="margin-top:1rem;">Audio</p>
+        <div class="form-row">
+          <div>
+            <label for="ffmpeg-audio-codec">Audio codec</label>
+            <select id="ffmpeg-audio-codec" name="ffmpeg_audio_codec">
+              <option value="aac" ${opts.audio_codec === 'aac' ? 'selected' : ''}>aac</option>
+              <option value="copy" ${opts.audio_codec === 'copy' ? 'selected' : ''}>copy</option>
+              <option value="none" ${opts.audio_codec === 'none' ? 'selected' : ''}>none (no audio)</option>
+            </select>
+          </div>
+          <div>
+            <label for="ffmpeg-audio-channels">Channels</label>
+            <input type="number" id="ffmpeg-audio-channels" name="ffmpeg_audio_channels" value="${v('audio_channels')}" min="0" placeholder="1">
+          </div>
+          <div>
+            <label for="ffmpeg-audio-sample-rate">Sample rate (Hz)</label>
+            <input type="number" id="ffmpeg-audio-sample-rate" name="ffmpeg_audio_sample_rate" value="${v('audio_sample_rate')}" placeholder="44100">
+          </div>
+        </div>
+        <p class="form-section-title" style="margin-top:1rem;">HLS output</p>
+        <div class="form-row">
+          <div>
+            <label for="ffmpeg-hls-time">HLS segment length (s)</label>
+            <input type="number" id="ffmpeg-hls-time" name="ffmpeg_hls_time" value="${v('hls_time')}" min="1" placeholder="2">
+          </div>
+          <div>
+            <label for="ffmpeg-hls-list-size">HLS list size (segments)</label>
+            <input type="number" id="ffmpeg-hls-list-size" name="ffmpeg_hls_list_size" value="${v('hls_list_size')}" min="0" placeholder="3">
+          </div>
+          <div style="flex:1;">
+            <label for="ffmpeg-hls-flags">HLS flags</label>
+            <input type="text" id="ffmpeg-hls-flags" name="ffmpeg_hls_flags" value="${v('hls_flags')}" placeholder="delete_segments+append_list">
+          </div>
+        </div>
+        <div style="margin-top:0.75rem;">
+          <label for="ffmpeg-extra-input-args">Extra input arguments (space-separated, e.g. -analyzeduration 1M)</label>
+          <input type="text" id="ffmpeg-extra-input-args" name="ffmpeg_extra_input_args" value="${v('extra_input_args')}" placeholder="" style="width:100%;max-width:480px;">
+        </div>
+        <div style="margin-top:0.5rem;">
+          <label for="ffmpeg-extra-output-args">Extra output arguments (space-separated)</label>
+          <input type="text" id="ffmpeg-extra-output-args" name="ffmpeg_extra_output_args" value="${v('extra_output_args')}" placeholder="" style="width:100%;max-width:480px;">
+        </div>
+      </div>`;
+}
 
 const BUILD_TIME = new Date().toISOString();
 
@@ -38,7 +212,13 @@ function csrfField(req) {
 }
 
 function verifyCsrf(req, res, next) {
-  const token = (req.body && req.body._csrf) || '';
+  let token = (req.body && req.body._csrf) || '';
+  if (Array.isArray(token)) {
+    // In cases like the snapshots page where multiple forms with _csrf exist,
+    // express.urlencoded can give us an array. Use the last value (the one
+    // from the submitted form) for verification.
+    token = token[token.length - 1] || '';
+  }
   if (!req.session._csrf || token !== req.session._csrf) {
     return res.status(403).send(layout('Error', '', `
       <h1>Invalid request</h1>
@@ -274,6 +454,7 @@ router.get('/', requireLogin, requireNoSetup, (req, res) => {
 // --- Cameras ---
 
 router.get('/cameras/new', requireLogin, (req, res) => {
+  const ffmpegOpts = getFfmpegOptsForForm(null);
   res.send(layout('Add camera', nav('cameras'), `
     ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: 'Add camera' })}
     <h1>Add camera</h1>
@@ -310,6 +491,7 @@ router.get('/cameras/new', requireLogin, (req, res) => {
           </div>
         </div>
       </div>
+      ${ffmpegFormSection(ffmpegOpts)}
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Add camera</button>
         <a href="/admin" class="btn btn-ghost">Cancel</a>
@@ -322,10 +504,11 @@ router.post('/cameras', requireLogin, verifyCsrf, (req, res) => {
   const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password } = req.body || {};
   if (!display_name || !rtsp_host) return res.redirect('/admin/cameras/new');
   const port = parseInt(rtsp_port) || 554;
+  const ffmpegOpts = { ...DEFAULT_FFMPEG_OPTIONS, ...ffmpegOptionsFromBody(req.body || {}) };
   try {
-    const id = db.createCamera(display_name.trim(), rtsp_host.trim(), port, (rtsp_path || '').trim(), (rtsp_username || '').trim(), (rtsp_password || '').trim());
+    const id = db.createCamera(display_name.trim(), rtsp_host.trim(), port, (rtsp_path || '').trim(), (rtsp_username || '').trim(), (rtsp_password || '').trim(), JSON.stringify(ffmpegOpts));
     const cam = db.getCamera(id);
-    streamManager.startStream(id, cam.rtsp_url);
+    streamManager.startStream(id, cam);
     res.redirect('/admin');
   } catch (err) {
     res.redirect('/admin/cameras/new?msg=' + encodeURIComponent(err.message));
@@ -336,6 +519,7 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
   const c = db.getCamera(Number(req.params.id));
   if (!c) return res.redirect('/admin');
   const hasRtspPw = c.rtsp_password ? true : false;
+  const ffmpegOpts = getFfmpegOptsForForm(c);
   res.send(layout('Edit camera', nav('cameras'), `
     ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name) })}
     <h1>Edit camera</h1>
@@ -373,6 +557,7 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
           </div>
         </div>
       </div>
+      ${ffmpegFormSection(ffmpegOpts)}
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Save changes</button>
         <a href="/admin" class="btn btn-ghost">Cancel</a>
@@ -389,11 +574,12 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, (req, res) => {
   if (!display_name || !rtsp_host) return res.redirect(`/admin/cameras/${id}/edit`);
   const port = parseInt(rtsp_port) || 554;
   const password = rtsp_password || c.rtsp_password;
+  const ffmpegOpts = { ...DEFAULT_FFMPEG_OPTIONS, ...ffmpegOptionsFromBody(req.body || {}) };
   try {
-    db.updateCamera(id, display_name.trim(), rtsp_host.trim(), port, (rtsp_path || '').trim(), (rtsp_username || '').trim(), (password || '').trim());
+    db.updateCamera(id, display_name.trim(), rtsp_host.trim(), port, (rtsp_path || '').trim(), (rtsp_username || '').trim(), (password || '').trim(), JSON.stringify(ffmpegOpts));
     streamManager.stopStream(id);
     const updated = db.getCamera(id);
-    streamManager.startStream(id, updated.rtsp_url);
+    streamManager.startStream(id, updated);
     res.redirect('/admin');
   } catch (err) {
     res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent(err.message));
@@ -643,7 +829,7 @@ router.get('/snapshots', requireLogin, (req, res) => {
       return `
         <div class="${starClass}" data-id="${s.id}">
           <label class="snap-admin-check-wrap" title="Select">
-            <input type="checkbox" class="snap-admin-check" value="${s.id}">
+            <input type="checkbox" class="snap-admin-check" name="ids[]" value="${s.id}">
           </label>
           <a href="/snapshots/${escapeHtml(s.filename)}" target="_blank" class="snap-admin-thumb-link">
             <img src="/snapshots/${escapeHtml(s.filename)}" alt="Snapshot" class="snap-admin-thumb" loading="lazy">
