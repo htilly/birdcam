@@ -8,7 +8,9 @@ services:
       # Optional: create first admin on first run
       # - ADMIN_USER=admin
       # - ADMIN_PASSWORD=changeme
-      - SESSION_SECRET=3ed2ac87c444b868d58f4ba0f2b92377e3b3d4f80f3ca6c1e3198405050cb89f
+      # SESSION_SECRET is auto-generated and persisted in the DB.
+      # Only set this if you need a specific value or share sessions across instances.
+      # - SESSION_SECRET=your-secret-here
     volumes:
       - birdcam-data:/app/data
     restart: unless-stopped

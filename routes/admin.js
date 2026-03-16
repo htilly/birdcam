@@ -190,7 +190,8 @@ function escapeHtml(s) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
 }
 
 function friendlyDate(iso) {
@@ -276,6 +277,7 @@ const layout = (title, navHtml, body) => `
       ${body}
     </main>
   </div>
+  <script src="/admin/confirm-handler.js"></script>
 </body>
 </html>`;
 
@@ -371,7 +373,7 @@ router.get('/', requireLogin, requireNoSetup, (req, res) => {
           <span class="status ${running ? 'on' : 'off'}"><span class="status-dot"></span>${running ? 'Live' : 'Off'}</span>
           <div class="camera-card-actions">
             <a href="/admin/cameras/${c.id}/edit" class="btn btn-small">Edit</a>
-            <form method="post" action="/admin/cameras/${c.id}/delete" style="display:inline" onsubmit="return confirm('Delete camera &quot;${escapeHtml(c.display_name)}&quot;?');">
+            <form method="post" action="/admin/cameras/${c.id}/delete" style="display:inline" data-confirm="Delete camera &quot;${escapeHtml(c.display_name)}&quot;?">
               ${csrfField(req)}
               <button type="submit" class="btn btn-small btn-danger">Delete</button>
             </form>
@@ -397,57 +399,7 @@ router.get('/', requireLogin, requireNoSetup, (req, res) => {
       <button type="button" class="btn btn-small btn-ghost" id="debug-toggle">&#x1F41B; Debug</button>
       <div id="debug-panel" class="debug-panel" style="display:none;"></div>
     </div>
-    <script>
-    (function() {
-      const btn = document.getElementById('debug-toggle');
-      const panel = document.getElementById('debug-panel');
-      let open = false;
-      let polling = null;
-
-      function escH(s) {
-        const el = document.createElement('span');
-        el.textContent = s;
-        return el.innerHTML;
-      }
-
-      function fetchDebug() {
-        fetch('/admin/api/debug-info').then(r => r.json()).then(info => {
-          let html = '<h3>System</h3><table class="admin-table debug-table">';
-          html += '<tr><td>Server uptime</td><td>' + escH(info.uptime) + '</td></tr>';
-          html += '<tr><td>Node.js</td><td>' + escH(info.nodeVersion) + '</td></tr>';
-          html += '<tr><td>Memory (RSS)</td><td>' + escH(info.memoryMB + ' MB') + '</td></tr>';
-          html += '</table>';
-
-          html += '<h3>Cameras</h3><table class="admin-table debug-table">';
-          html += '<tr><th>ID</th><th>Name</th><th>Status</th><th>Logs</th></tr>';
-          for (const cam of info.cameras) {
-            html += '<tr><td>' + cam.id + '</td><td>' + escH(cam.name) + '</td>';
-            html += '<td><span class="status ' + (cam.running ? 'on' : 'off') + '"><span class="status-dot"></span>' + (cam.running ? 'Live' : 'Off') + '</span></td>';
-            html += '<td>' + cam.logLines + '</td></tr>';
-            if (cam.streamInfo && cam.streamInfo.length) {
-              html += '<tr><td colspan="4"><pre style="margin:0.25rem 0 0.5rem;font-size:0.75rem;background:#1a202c;color:#68d391;padding:0.5rem;border-radius:6px;white-space:pre-wrap;word-break:break-all">' + cam.streamInfo.map(l => escH(l)).join('\\n') + '</pre></td></tr>';
-            }
-          }
-          html += '</table>';
-          html += '<p style="margin-top:0.75rem;"><a href="/admin/debug" class="btn btn-small">View FFmpeg Logs</a></p>';
-          panel.innerHTML = html;
-        }).catch(() => { panel.innerHTML = '<p>Failed to load debug info.</p>'; });
-      }
-
-      btn.addEventListener('click', () => {
-        open = !open;
-        panel.style.display = open ? 'block' : 'none';
-        btn.textContent = open ? '\\u{1F41B} Hide Debug' : '\\u{1F41B} Debug';
-        if (open) {
-          fetchDebug();
-          polling = setInterval(fetchDebug, 5000);
-        } else if (polling) {
-          clearInterval(polling);
-          polling = null;
-        }
-      });
-    })();
-    </script>
+    <script src="/admin/dashboard-debug.js"></script>
   `));
 });
 
@@ -611,7 +563,7 @@ router.get('/users', requireLogin, (req, res) => {
           <td>
             <a href="/admin/users/${u.id}/edit" class="btn btn-small">Change password</a>
             ${canDelete ? `
-            <form method="post" action="/admin/users/${u.id}/delete" style="display:inline" onsubmit="return confirm('Delete user &quot;${escapeHtml(u.username)}&quot;?');">
+            <form method="post" action="/admin/users/${u.id}/delete" style="display:inline" data-confirm="Delete user &quot;${escapeHtml(u.username)}&quot;?">
               ${csrfField(req)}
               <button type="submit" class="btn btn-small btn-danger">Delete</button>
             </form>
@@ -743,75 +695,7 @@ router.get('/visitors', requireLogin, (req, res) => {
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
-    <script>
-(function() {
-  function fmt(n) { return n >= 1000000 ? (n/1e6).toFixed(1) + 'M' : n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n); }
-  function load() {
-    fetch('/admin/api/visitor-stats')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        document.getElementById('stat-today').textContent = fmt(data.uniqueToday);
-        document.getElementById('stat-week').textContent = fmt(data.uniqueWeek);
-        document.getElementById('stat-month').textContent = fmt(data.uniqueMonth);
-
-        var daily = data.daily || [];
-        var last30 = [];
-        var d = new Date();
-        for (var i = 29; i >= 0; i--) {
-          var day = new Date(d);
-          day.setDate(day.getDate() - i);
-          var dateStr = day.toISOString().slice(0, 10);
-          var row = daily.find(function(r) { return r.date === dateStr; });
-          last30.push({ date: dateStr, count: row ? row.count : 0 });
-        }
-
-        var labels = last30.map(function(r) {
-          var d = new Date(r.date + 'T12:00:00');
-          return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-        });
-        var counts = last30.map(function(r) { return r.count; });
-
-        var ctx = document.getElementById('visitor-chart').getContext('2d');
-        if (window.visitorChart) window.visitorChart.destroy();
-        window.visitorChart = new Chart(ctx, {
-          type: 'line',
-          data: {
-            labels: labels,
-            datasets: [{
-              label: 'Unique visitors',
-              data: counts,
-              borderColor: 'rgb(74, 222, 128)',
-              backgroundColor: 'rgba(74, 222, 128, 0.15)',
-              fill: true,
-              tension: 0.3,
-              pointRadius: 4,
-              pointHoverRadius: 6
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            plugins: {
-              legend: { display: false }
-            },
-            scales: {
-              y: {
-                beginAtZero: true,
-                ticks: { precision: 0 }
-              }
-            }
-          }
-        });
-      })
-      .catch(function() {
-        document.getElementById('stat-today').textContent = '?';
-        document.getElementById('stat-week').textContent = '?';
-        document.getElementById('stat-month').textContent = '?';
-      });
-  }
-  load();
-})();
-    </script>
+    <script src="/admin/visitors-chart.js"></script>
   `));
 });
 
@@ -846,7 +730,7 @@ router.get('/snapshots', requireLogin, (req, res) => {
               <input type="hidden" name="starred" value="${s.starred ? '0' : '1'}">
               <button type="submit" class="btn btn-small ${s.starred ? 'btn-ghost' : ''}" title="${starLabel}">${starIcon} ${starLabel}</button>
             </form>
-            <form method="post" action="/admin/snapshots/${s.id}/delete" style="display:inline" onsubmit="return confirm('Delete this snapshot?');">
+            <form method="post" action="/admin/snapshots/${s.id}/delete" style="display:inline" data-confirm="Delete this snapshot?">
               ${csrfToken}
               <button type="submit" class="btn btn-small btn-danger">Delete</button>
             </form>
@@ -855,7 +739,7 @@ router.get('/snapshots', requireLogin, (req, res) => {
     }).join('');
     content = `
       ${req.query.msg ? `<div class="admin-msg admin-msg-ok">${escapeHtml(req.query.msg)}</div>` : ''}
-      <form method="post" action="/admin/snapshots/bulk-delete" id="bulk-form" onsubmit="return confirmBulk()">
+      <form method="post" action="/admin/snapshots/bulk-delete" id="bulk-form">
         ${csrfToken}
         <div class="snap-bulk-bar">
           <label class="snap-bulk-select-all">
@@ -878,31 +762,7 @@ router.get('/snapshots', requireLogin, (req, res) => {
     </div>
     <p class="visitors-desc">Star a snapshot to pin it in the strip for all viewers.</p>
     ${content}
-    <script>
-      (function() {
-        const checkboxes = document.querySelectorAll('.snap-admin-check');
-        const selectAll = document.getElementById('snap-select-all');
-        const bulkBtn = document.getElementById('bulk-delete-btn');
-        const countEl = document.getElementById('bulk-count');
-        function updateBulk() {
-          const n = document.querySelectorAll('.snap-admin-check:checked').length;
-          countEl.textContent = n;
-          bulkBtn.disabled = n === 0;
-        }
-        if (selectAll) selectAll.addEventListener('change', () => {
-          checkboxes.forEach(c => c.checked = selectAll.checked);
-          updateBulk();
-        });
-        checkboxes.forEach(c => c.addEventListener('change', () => {
-          if (!c.checked && selectAll) selectAll.checked = false;
-          updateBulk();
-        }));
-      })();
-      function confirmBulk() {
-        const n = document.querySelectorAll('.snap-admin-check:checked').length;
-        return n > 0 && confirm('Delete ' + n + ' snapshot' + (n > 1 ? 's' : '') + '? This cannot be undone.');
-      }
-    </script>
+    <script src="/admin/snapshots-admin.js"></script>
   `));
 });
 
@@ -958,6 +818,8 @@ router.get('/settings', requireLogin, (req, res) => {
   const chatRateWindow = settings.chat_rate_window_ms || '1000';
   const snapRateMax = settings.snapshot_rate_max || '6';
   const snapRateWindow = settings.snapshot_rate_window_sec || '60';
+  const apiRateMax = settings.api_rate_max || '100';
+  const apiRateWindow = settings.api_rate_window_min || '1';
   const snapStripStarred = settings.snap_strip_starred || '3';
   const snapStripTotal = settings.snap_strip_total || '5';
   const siteName = settings.site_name || 'Birdcam Live';
@@ -1066,6 +928,23 @@ router.get('/settings', requireLogin, (req, res) => {
         </p>
       </fieldset>
       <fieldset class="settings-group">
+        <legend>Public API Rate Limiting</legend>
+        <div class="form-row">
+          <div>
+            <label for="api-rate-max">Max requests</label>
+            <input type="number" id="api-rate-max" name="api_rate_max" value="${escapeHtml(apiRateMax)}" min="1" max="10000">
+          </div>
+          <div>
+            <label for="api-rate-window">Window (minutes)</label>
+            <input type="number" id="api-rate-window" name="api_rate_window_min" value="${escapeHtml(apiRateWindow)}" min="1" max="60">
+          </div>
+        </div>
+        <p class="field-hint">
+          Maximum requests to public API endpoints (<code>/api/*</code>) per IP within the time window.
+          Default: 100 requests per 1 minute.
+        </p>
+      </fieldset>
+      <fieldset class="settings-group">
         <legend>Snapshot Strip</legend>
         <div class="form-row">
           <div>
@@ -1092,7 +971,7 @@ router.get('/settings', requireLogin, (req, res) => {
     <fieldset class="settings-group" style="margin-top:1.5rem;">
       <legend>Sessions</legend>
       <p class="field-hint" style="padding-left:0;margin:0 0 0.75rem;">Invalidates all active sessions and forces everyone to log in again. Use this if you suspect a session has been compromised or after changing SSL/proxy settings.</p>
-      <form method="post" action="/admin/invalidate-sessions" onsubmit="return confirm('This will log out all users including yourself. Continue?')">
+      <form method="post" action="/admin/invalidate-sessions" data-confirm="This will log out all users including yourself. Continue?">
         <input type="hidden" name="_csrf" value="${getCsrfToken(req)}">
         <button type="submit" class="btn btn-danger">Invalidate all sessions</button>
       </form>
@@ -1133,109 +1012,7 @@ router.get('/settings', requireLogin, (req, res) => {
       <pre id="debug-float-log" style="background:#1a202c;color:#68d391;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:0.78rem;padding:0.5rem 0.75rem;margin:0;max-height:35vh;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.4;"></pre>
     </div>
 
-    <script>
-    (function() {
-      const toggle = document.getElementById('debug-log-toggle');
-      const panel = document.getElementById('debug-log-panel');
-      const logEl = document.getElementById('debug-log-output');
-      const camSelect = document.getElementById('debug-cam-select');
-      const autoScroll = document.getElementById('debug-auto-scroll');
-      const clearBtn = document.getElementById('debug-clear-log');
-      const detachBtn = document.getElementById('debug-detach-log');
-
-      const floatBar = document.getElementById('debug-float-bar');
-      const floatLog = document.getElementById('debug-float-log');
-      const floatCamSelect = document.getElementById('debug-float-cam-select');
-      const floatAutoScroll = document.getElementById('debug-float-auto-scroll');
-      const floatClearBtn = document.getElementById('debug-float-clear');
-      const attachBtn = document.getElementById('debug-attach-log');
-
-      // Populate float cam select with same options
-      floatCamSelect.innerHTML = camSelect.innerHTML;
-
-      let polling = null;
-      let detached = false;
-
-      function escLog(s) {
-        const el = document.createElement('span');
-        el.textContent = s;
-        return el.innerHTML;
-      }
-
-      function renderLogs(data, cam, target, scrollCheck) {
-        let text = '';
-        if (cam === 'all') {
-          for (const [id, lines] of Object.entries(data)) {
-            if (lines.length) {
-              text += '=== Camera ' + id + ' ===\\n';
-              text += lines.map(l => escLog(l)).join('\\n') + '\\n\\n';
-            }
-          }
-        } else {
-          text = (data.lines || []).map(l => escLog(l)).join('\\n');
-        }
-        target.innerHTML = text || 'No log output yet.';
-        if (scrollCheck.checked) target.scrollTop = target.scrollHeight;
-      }
-
-      function fetchLogs() {
-        const cam = detached ? floatCamSelect.value : camSelect.value;
-        const url = cam === 'all' ? '/admin/api/logs' : '/admin/api/logs/' + cam;
-        fetch(url).then(r => r.json()).then(data => {
-          if (detached) {
-            renderLogs(data, cam, floatLog, floatAutoScroll);
-          } else {
-            renderLogs(data, cam, logEl, autoScroll);
-          }
-        }).catch(() => {});
-      }
-
-      function startPolling() {
-        if (polling) clearInterval(polling);
-        fetchLogs();
-        polling = setInterval(fetchLogs, 3000);
-      }
-
-      function stopPolling() {
-        if (polling) { clearInterval(polling); polling = null; }
-      }
-
-      toggle.addEventListener('change', () => {
-        if (toggle.checked) {
-          panel.style.display = '';
-          startPolling();
-        } else {
-          panel.style.display = 'none';
-          if (!detached) stopPolling();
-        }
-      });
-
-      detachBtn.addEventListener('click', () => {
-        detached = true;
-        panel.style.display = 'none';
-        floatBar.style.display = '';
-        floatCamSelect.value = camSelect.value;
-        startPolling();
-      });
-
-      attachBtn.addEventListener('click', () => {
-        detached = false;
-        floatBar.style.display = 'none';
-        if (toggle.checked) {
-          panel.style.display = '';
-          camSelect.value = floatCamSelect.value;
-          startPolling();
-        } else {
-          stopPolling();
-        }
-      });
-
-      camSelect.addEventListener('change', fetchLogs);
-      floatCamSelect.addEventListener('change', fetchLogs);
-      clearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
-      floatClearBtn.addEventListener('click', () => { floatLog.innerHTML = ''; });
-    })();
-    </script>
+    <script src="/admin/settings-debug.js"></script>
   `));
 });
 
@@ -1261,6 +1038,10 @@ router.post('/settings', requireLogin, verifyCsrf, (req, res) => {
   db.setSetting('chat_rate_window_ms', String(chatRateWindow));
   db.setSetting('snapshot_rate_max', String(snapRateMax));
   db.setSetting('snapshot_rate_window_sec', String(snapRateWindow));
+  const apiRateMax = Math.max(1, Math.min(10000, parseInt(req.body.api_rate_max) || 100));
+  const apiRateWindow = Math.max(1, Math.min(60, parseInt(req.body.api_rate_window_min) || 1));
+  db.setSetting('api_rate_max', String(apiRateMax));
+  db.setSetting('api_rate_window_min', String(apiRateWindow));
   db.setSetting('snap_strip_starred', String(snapStripStarred));
   db.setSetting('snap_strip_total', String(snapStripTotal));
   const siteName = String(req.body.site_name || 'Birdcam Live').trim().slice(0, 60) || 'Birdcam Live';
@@ -1327,60 +1108,7 @@ router.get('/debug', requireLogin, (req, res) => {
       <button type="button" class="btn btn-small" id="clear-log">Clear</button>
     </div>
     <pre id="log-output" class="debug-log"></pre>
-    <script>
-    (function() {
-      const logEl = document.getElementById('log-output');
-      const camSelect = document.getElementById('cam-select');
-      const autoScroll = document.getElementById('auto-scroll');
-      const stickyCheck = document.getElementById('sticky-log');
-      const clearBtn = document.getElementById('clear-log');
-      let polling = null;
-
-      function escLog(s) {
-        const el = document.createElement('span');
-        el.textContent = s;
-        return el.innerHTML;
-      }
-
-      function fetchLogs() {
-        const cam = camSelect.value;
-        const url = cam === 'all' ? '/admin/api/logs' : '/admin/api/logs/' + cam;
-        fetch(url).then(r => r.json()).then(data => {
-          let text = '';
-          if (cam === 'all') {
-            for (const [id, lines] of Object.entries(data)) {
-              if (lines.length) {
-                text += '=== Camera ' + id + ' ===\\n';
-                text += lines.map(l => escLog(l)).join('\\n') + '\\n\\n';
-              }
-            }
-          } else {
-            text = (data.lines || []).map(l => escLog(l)).join('\\n');
-          }
-          logEl.innerHTML = text || 'No log output yet.';
-          if (autoScroll.checked) logEl.scrollTop = logEl.scrollHeight;
-        }).catch(() => {});
-      }
-
-      function startPolling() {
-        stopPolling();
-        fetchLogs();
-        polling = setInterval(fetchLogs, 3000);
-      }
-
-      function stopPolling() {
-        if (polling) { clearInterval(polling); polling = null; }
-      }
-
-      camSelect.addEventListener('change', fetchLogs);
-      clearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
-      stickyCheck.addEventListener('change', () => {
-        logEl.classList.toggle('debug-log-sticky', stickyCheck.checked);
-      });
-
-      startPolling();
-    })();
-    </script>
+    <script src="/admin/debug-page.js"></script>
   `));
 });
 

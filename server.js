@@ -53,7 +53,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+      scriptSrc: ["'self'", "https://cdn.jsdelivr.net"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       imgSrc: ["'self'", "data:"],
@@ -104,17 +104,25 @@ function makeSetupLimiter() {
   const max = parseInt(db.getSetting('setup_rate_max')) || 10;
   return { limiter: rateLimit({ windowMs: windowMin * 60 * 1000, max, standardHeaders: true, legacyHeaders: false }), key: `${windowMin}:${max}` };
 }
+function makeApiLimiter() {
+  const windowMin = parseInt(db.getSetting('api_rate_window_min')) || 1;
+  const max = parseInt(db.getSetting('api_rate_max')) || 100;
+  return { limiter: rateLimit({ windowMs: windowMin * 60 * 1000, max, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests. Please try again later.' } }), key: `${windowMin}:${max}` };
+}
 let _loginLimiterState = makeLoginLimiter();
 let _setupLimiterState = makeSetupLimiter();
-// Refresh limiters every 60s if settings changed (never recreate inside a request)
+let _apiLimiterState = makeApiLimiter();
 setInterval(() => {
   const login = makeLoginLimiter();
   if (login.key !== _loginLimiterState.key) _loginLimiterState = login;
   const setup = makeSetupLimiter();
   if (setup.key !== _setupLimiterState.key) _setupLimiterState = setup;
+  const api = makeApiLimiter();
+  if (api.key !== _apiLimiterState.key) _apiLimiterState = api;
 }, 60_000);
 app.use('/admin/login', (req, res, next) => _loginLimiterState.limiter(req, res, next));
 app.use('/admin/setup', (req, res, next) => _setupLimiterState.limiter(req, res, next));
+app.use('/api', (req, res, next) => _apiLimiterState.limiter(req, res, next));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -274,7 +282,21 @@ function broadcastStats() {
 }
 
 const wss = new WebSocketServer({ server, path: '/ws' });
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      const o = new URL(origin);
+      const host = req.headers.host || '';
+      if (o.host !== host) {
+        ws.close(1008, 'Origin not allowed');
+        return;
+      }
+    } catch (_) {
+      ws.close(1008, 'Invalid origin');
+      return;
+    }
+  }
   ws._msgTimestamps = [];
 
   ws.send(JSON.stringify({ type: 'history', messages: chatMessages.slice(-50) }));

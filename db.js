@@ -139,6 +139,8 @@ const DEFAULT_SETTINGS = {
   chat_rate_window_ms: '1000',
   snapshot_rate_max: '6',
   snapshot_rate_window_sec: '60',
+  api_rate_max: '100',
+  api_rate_window_min: '1',
 };
 
 function getSetting(key) {
