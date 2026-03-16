@@ -15,6 +15,7 @@ const adminRoutes = require('./routes/admin');
 const recordingsRoutes = require('./routes/recordings');
 
 const PORT = process.env.PORT || 3000;
+const BUILD_TIME = new Date().toISOString();
 
 db.getDb();
 db.migrate();
@@ -138,6 +139,11 @@ app.get('/api/cameras', (req, res) => {
 // Public API for visitor stats (no auth) — used by public /visitors page
 app.get('/api/visitor-stats', (req, res) => {
   res.json(db.getVisitorStats());
+});
+
+// Public API for build info (no auth) — used to display build version in UI
+app.get('/api/build-info', (req, res) => {
+  res.json({ buildTime: BUILD_TIME });
 });
 
 // Public visitors stats page (no admin login required) — same look as main page

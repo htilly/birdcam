@@ -19,6 +19,18 @@
     }
   }).catch(() => {});
 
+  // Fetch and display build number
+  fetch('/api/build-info').then(r => r.json()).then(data => {
+    const buildEl = document.getElementById('build-number');
+    if (buildEl && data.buildTime) {
+      const d = new Date(data.buildTime);
+      d.setHours(d.getHours() + 1); // Add 1 hour for CET/CEST
+      const formatted = d.toISOString().slice(0, 10).replace(/-/g, '') +
+                        d.toISOString().slice(11, 16).replace(':', '');
+      buildEl.textContent = 'v' + formatted;
+    }
+  }).catch(() => {});
+
   const video = document.getElementById('video');
   const videoOverlay = document.getElementById('video-overlay');
   const cameraTabs = document.getElementById('camera-tabs');

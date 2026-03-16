@@ -40,8 +40,15 @@ body {
   flex-shrink: 0;
 }
 
-.admin-link {
+.admin-link-wrap {
   margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+}
+
+.admin-link {
   font-size: 0.9rem;
   color: var(--text-soft);
   text-decoration: none;
@@ -50,6 +57,14 @@ body {
 
 .admin-link:hover {
   color: var(--text);
+}
+
+.build-number {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  opacity: 0.6;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  letter-spacing: 0.02em;
 }
 
 .logo {
