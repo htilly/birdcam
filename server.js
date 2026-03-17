@@ -13,9 +13,25 @@ const db = require('./db');
 const streamManager = require('./streamManager');
 const adminRoutes = require('./routes/admin');
 const recordingsRoutes = require('./routes/recordings');
+const { requestIdMiddleware } = require('./middleware/requestId');
+const { auditLog } = require('./middleware/audit');
 
 const PORT = process.env.PORT || 3000;
 const BUILD_TIME = new Date().toISOString();
+
+// Get Git commit hash if available
+let GIT_COMMIT = process.env.GIT_COMMIT || null;
+
+// If not set via env var, try to detect from git (local development)
+if (!GIT_COMMIT || GIT_COMMIT === 'unknown') {
+  try {
+    const { execSync } = require('child_process');
+    GIT_COMMIT = execSync('git rev-parse --short HEAD 2>/dev/null', { encoding: 'utf8' }).trim();
+  } catch (e) {
+    // Not in a git repo or git not available
+    GIT_COMMIT = null;
+  }
+}
 
 db.getDb();
 db.migrate();
@@ -47,6 +63,9 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Request tracing (security review fix)
+app.use(requestIdMiddleware);
 
 // Security headers
 app.use(helmet({
@@ -151,7 +170,10 @@ app.get('/api/visitor-stats', (req, res) => {
 
 // Public API for build info (no auth) — used to display build version in UI
 app.get('/api/build-info', (req, res) => {
-  res.json({ buildTime: BUILD_TIME });
+  res.json({
+    buildTime: BUILD_TIME,
+    gitCommit: GIT_COMMIT
+  });
 });
 
 // Public visitors stats page (no admin login required) — same look as main page
@@ -254,6 +276,7 @@ const chatMessages = db.getChatMessages(100);
 const MAX_CHAT_MESSAGES = 100;
 function getChatRateLimit() { return parseInt(db.getSetting('chat_rate_limit')) || 5; }
 function getChatRateWindow() { return parseInt(db.getSetting('chat_rate_window_ms')) || 1000; }
+function isChatDisabled() { return db.getSetting('chat_disabled') === 'true'; }
 
 function sanitizeChat(str) {
   return String(str)
@@ -262,6 +285,17 @@ function sanitizeChat(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#x27;');
+}
+
+function getClientIp(req) {
+  // Support reverse proxy
+  if (db.isReverseProxy()) {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (forwarded) {
+      return forwarded.split(',')[0].trim();
+    }
+  }
+  return req.socket.remoteAddress || req.connection.remoteAddress;
 }
 
 function getViewerCount() {
@@ -281,6 +315,28 @@ function broadcastStats() {
   });
 }
 
+// Broadcast message deletion to all clients
+function broadcastDeleteMessages(ids) {
+  const payload = JSON.stringify({ type: 'delete_messages', ids });
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) client.send(payload);
+  });
+}
+
+// Broadcast clear all messages to all clients
+function broadcastClearChat() {
+  const payload = JSON.stringify({ type: 'clear_chat' });
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) client.send(payload);
+  });
+}
+
+// Reload chat messages from database (after admin operations)
+function reloadChatMessages() {
+  chatMessages.length = 0;
+  chatMessages.push(...db.getChatMessages(100));
+}
+
 const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', (ws, req) => {
   const origin = req.headers.origin;
@@ -297,7 +353,10 @@ wss.on('connection', (ws, req) => {
       return;
     }
   }
+  
+  const clientIp = getClientIp(req);
   ws._msgTimestamps = [];
+  ws._clientIp = clientIp;
 
   ws.send(JSON.stringify({ type: 'history', messages: chatMessages.slice(-50) }));
   broadcastStats();
@@ -315,15 +374,31 @@ wss.on('connection', (ws, req) => {
 
       const data = JSON.parse(raw.toString());
       if (data.nickname && data.text) {
+        if (isChatDisabled()) {
+          ws.send(JSON.stringify({ type: 'error', text: 'Chat is temporarily disabled by admin.' }));
+          return;
+        }
+
+        // Check if IP is banned
+        if (db.isIpBanned(ws._clientIp)) {
+          ws.send(JSON.stringify({ type: 'error', text: 'You are banned from chat.' }));
+          return;
+        }
+        
         const msg = {
           nickname: sanitizeChat(String(data.nickname).slice(0, 30).trim()),
           text: sanitizeChat(String(data.text).slice(0, 500).trim()),
           time: new Date().toISOString(),
+          ip_address: ws._clientIp,
         };
         if (!msg.nickname || !msg.text) return;
+        
+        const msgId = db.addChatMessage(msg.nickname, msg.text, msg.time, ws._clientIp);
+        msg.id = msgId;
+        
         chatMessages.push(msg);
         if (chatMessages.length > MAX_CHAT_MESSAGES) chatMessages.shift();
-        db.addChatMessage(msg.nickname, msg.text, msg.time);
+        
         wss.clients.forEach((client) => {
           if (client.readyState === 1) client.send(JSON.stringify({ type: 'message', ...msg }));
         });
@@ -332,6 +407,12 @@ wss.on('connection', (ws, req) => {
     } catch (_) {}
   });
 });
+
+// Expose functions for admin routes
+app.locals.broadcastDeleteMessages = broadcastDeleteMessages;
+app.locals.broadcastClearChat = broadcastClearChat;
+app.locals.reloadChatMessages = reloadChatMessages;
+app.locals.chatMessages = chatMessages;
 
 // --- Snapshot POST (after wss so we can broadcast) ---
 app.post('/api/snapshots', snapshotRateLimitMiddleware, (req, res) => {
@@ -369,7 +450,7 @@ function requireSameOriginApi(req, res, next) {
   next();
 }
 
-app.post('/api/admin/snapshots/:id/star', requireSameOriginApi, (req, res) => {
+app.post('/api/admin/snapshots/:id/star', requireSameOriginApi, auditLog('api.snapshot.star'), (req, res) => {
   if (!req.session || !req.session.userId) return res.status(403).json({ error: 'Forbidden' });
   const id = Number(req.params.id);
   const starred = (req.body || {}).starred !== false && (req.body || {}).starred !== 'false';
@@ -381,7 +462,7 @@ app.post('/api/admin/snapshots/:id/star', requireSameOriginApi, (req, res) => {
   res.json({ ok: true, starred });
 });
 
-app.post('/api/admin/snapshots/:id/delete', requireSameOriginApi, (req, res) => {
+app.post('/api/admin/snapshots/:id/delete', requireSameOriginApi, auditLog('api.snapshot.delete'), (req, res) => {
   if (!req.session || !req.session.userId) return res.status(403).json({ error: 'Forbidden' });
   const id = Number(req.params.id);
   const snap = db.getSnapshot(id);
@@ -411,6 +492,33 @@ app.get('/api/stats', (req, res) => {
     totalChatMessages: chatMessages.length,
     streams: cameras,
   });
+});
+
+// --- Error Handler (MUST be last middleware, after all routes) ---
+app.use((err, req, res, next) => {
+  // Log error details for debugging
+  console.error('Error:', {
+    message: err.message,
+    stack: err.stack,
+    requestId: req.requestId,
+    path: req.path,
+    method: req.method,
+    userId: req.session?.userId
+  });
+
+  // Never expose stack traces or internal details in production
+  if (process.env.NODE_ENV === 'production') {
+    res.status(err.status || 500).json({
+      error: 'Internal server error'
+    });
+  } else {
+    // Development: show full error details
+    res.status(err.status || 500).json({
+      error: err.message,
+      stack: err.stack,
+      details: err
+    });
+  }
 });
 
 // --- Graceful shutdown ---

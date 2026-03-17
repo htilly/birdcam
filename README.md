@@ -2,7 +2,11 @@
 
 ![Birdcam Live](public/logo.png)
 
-A single-Docker web app to view RTSP birdcam streams in the browser, with a kid-friendly UI and a chat sidebar. Admin portal (login required) lets you add multiple cameras with URL, username, and password.
+A single-Docker web app to view RTSP birdcam streams in the browser, with a kid-friendly UI and a chat sidebar. Admin portal (login required) lets you add multiple cameras with URL, username, and password. Try it live: https://bird.slowtv.nu/
+
+## Live example
+
+- https://bird.slowtv.nu/
 
 ## Quick start
 

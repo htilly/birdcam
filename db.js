@@ -106,9 +106,31 @@ function migrate() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nickname TEXT NOT NULL,
         text TEXT NOT NULL,
-        time TEXT NOT NULL
+        time TEXT NOT NULL,
+        ip_address TEXT
       );
       CREATE INDEX idx_chat_messages_id ON chat_messages(id);
+    `);
+  } else {
+    // Add ip_address column if missing (migration)
+    const chatCols = d.prepare("PRAGMA table_info(chat_messages)").all().map(c => c.name);
+    if (!chatCols.includes('ip_address')) {
+      d.exec(`ALTER TABLE chat_messages ADD COLUMN ip_address TEXT`);
+    }
+  }
+
+  // Banned IPs table for chat moderation
+  const bannedTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='banned_ips'").get();
+  if (!bannedTable) {
+    d.exec(`
+      CREATE TABLE banned_ips (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip_address TEXT NOT NULL UNIQUE,
+        reason TEXT,
+        banned_by TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_banned_ips_ip ON banned_ips(ip_address);
     `);
   }
 
@@ -125,6 +147,27 @@ function migrate() {
       CREATE INDEX idx_visits_visitor_key ON visits(visitor_key);
     `);
   }
+
+  // Audit log for admin actions (security review fix)
+  const auditTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='audit_log'").get();
+  if (!auditTable) {
+    d.exec(`
+      CREATE TABLE audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+        user_id INTEGER,
+        username TEXT,
+        action TEXT NOT NULL,
+        details TEXT,
+        ip_address TEXT,
+        request_id TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_audit_timestamp ON audit_log(timestamp);
+      CREATE INDEX idx_audit_user_id ON audit_log(user_id);
+      CREATE INDEX idx_audit_action ON audit_log(action);
+    `);
+  }
 }
 
 // --- Settings ---
@@ -137,6 +180,7 @@ const DEFAULT_SETTINGS = {
   setup_rate_max: '10',
   chat_rate_limit: '5',
   chat_rate_window_ms: '1000',
+  chat_disabled: 'false',
   snapshot_rate_max: '6',
   snapshot_rate_window_sec: '60',
   api_rate_max: '100',
@@ -319,14 +363,52 @@ function getAllStarredSnapshots() {
 }
 
 // --- Chat messages ---
-function addChatMessage(nickname, text, time) {
-  getDb().prepare('INSERT INTO chat_messages (nickname, text, time) VALUES (?, ?, ?)').run(nickname, text, time);
+function addChatMessage(nickname, text, time, ipAddress = null) {
+  const result = getDb().prepare('INSERT INTO chat_messages (nickname, text, time, ip_address) VALUES (?, ?, ?, ?)').run(nickname, text, time, ipAddress);
   // Prune to keep only last 100 messages
   getDb().prepare('DELETE FROM chat_messages WHERE id NOT IN (SELECT id FROM chat_messages ORDER BY id DESC LIMIT 100)').run();
+  return result.lastInsertRowid;
 }
 
 function getChatMessages(limit = 50) {
-  return getDb().prepare('SELECT nickname, text, time FROM chat_messages ORDER BY id DESC LIMIT ?').all(limit).reverse();
+  return getDb().prepare('SELECT id, nickname, text, time, ip_address FROM chat_messages ORDER BY id DESC LIMIT ?').all(limit).reverse();
+}
+
+function deleteChatMessage(id) {
+  return getDb().prepare('DELETE FROM chat_messages WHERE id = ?').run(id);
+}
+
+function deleteChatMessages(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const placeholders = ids.map(() => '?').join(',');
+  return getDb().prepare(`DELETE FROM chat_messages WHERE id IN (${placeholders})`).run(...ids);
+}
+
+function clearAllChatMessages() {
+  return getDb().prepare('DELETE FROM chat_messages').run();
+}
+
+// --- IP Bans ---
+function addBan(ipAddress, reason = null, bannedBy = null) {
+  try {
+    getDb().prepare('INSERT OR REPLACE INTO banned_ips (ip_address, reason, banned_by) VALUES (?, ?, ?)').run(ipAddress, reason, bannedBy);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function removeBan(ipAddress) {
+  return getDb().prepare('DELETE FROM banned_ips WHERE ip_address = ?').run(ipAddress);
+}
+
+function isIpBanned(ipAddress) {
+  const row = getDb().prepare('SELECT 1 FROM banned_ips WHERE ip_address = ?').get(ipAddress);
+  return !!row;
+}
+
+function listBans() {
+  return getDb().prepare('SELECT * FROM banned_ips ORDER BY created_at DESC').all();
 }
 
 // --- Visitor stats ---
@@ -357,6 +439,17 @@ function getVisitorStats() {
     ORDER BY date
   `).all();
   return { uniqueToday, uniqueWeek, uniqueMonth, daily };
+}
+
+// --- Audit Log ---
+function addAuditLog(userId, username, action, details, ipAddress, requestId) {
+  getDb().prepare(
+    'INSERT INTO audit_log (user_id, username, action, details, ip_address, request_id) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(userId, username, action, details || null, ipAddress || null, requestId || null);
+}
+
+function getAuditLogs(limit = 100) {
+  return getDb().prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT ?').all(limit);
 }
 
 module.exports = {
@@ -397,4 +490,13 @@ module.exports = {
   getStarredSnapshot,
   addChatMessage,
   getChatMessages,
+  deleteChatMessage,
+  deleteChatMessages,
+  clearAllChatMessages,
+  addBan,
+  removeBan,
+  isIpBanned,
+  listBans,
+  addAuditLog,
+  getAuditLogs,
 };

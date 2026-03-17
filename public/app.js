@@ -22,12 +22,17 @@
   // Fetch and display build number
   fetch('/api/build-info').then(r => r.json()).then(data => {
     const buildEl = document.getElementById('build-number');
-    if (buildEl && data.buildTime) {
-      const d = new Date(data.buildTime);
-      d.setHours(d.getHours() + 1); // Add 1 hour for CET/CEST
-      const formatted = d.toISOString().slice(0, 10).replace(/-/g, '') +
-                        d.toISOString().slice(11, 16).replace(':', '');
-      buildEl.textContent = 'v' + formatted;
+    if (buildEl) {
+      // Prefer git commit hash (production) over date version (local dev)
+      if (data.gitCommit) {
+        buildEl.textContent = 'v' + data.gitCommit;
+      } else if (data.buildTime) {
+        const d = new Date(data.buildTime);
+        d.setHours(d.getHours() + 1); // Add 1 hour for CET/CEST
+        const formatted = d.toISOString().slice(0, 10).replace(/-/g, '') +
+                          d.toISOString().slice(11, 16).replace(':', '');
+        buildEl.textContent = 'v' + formatted;
+      }
     }
   }).catch(() => {});
 
@@ -139,10 +144,26 @@
         } else if (data.type === 'message' && data.nickname && data.text) {
           const k = msgKey(data);
           if (!seenMsgKeys.has(k)) { seenMsgKeys.add(k); appendMessage(data); }
+        } else if (data.type === 'error' && data.text) {
+          const oldPlaceholder = chatInput.placeholder;
+          chatInput.placeholder = data.text;
+          setTimeout(() => {
+            chatInput.placeholder = oldPlaceholder || 'Type a message...';
+          }, 3000);
         } else if (data.type === 'stats') {
           updateStatsFromPayload(data);
         } else if (data.type === 'snapshots') {
           renderSnapshots(data);
+        } else if (data.type === 'delete_messages' && Array.isArray(data.ids)) {
+          // Remove deleted messages from chat
+          data.ids.forEach(id => {
+            const el = chatMessages.querySelector(`[data-msg-id="${id}"]`);
+            if (el) el.remove();
+          });
+        } else if (data.type === 'clear_chat') {
+          // Clear all messages
+          chatMessages.innerHTML = '';
+          seenMsgKeys.clear();
         }
       } catch (_) {}
     };
@@ -174,6 +195,7 @@
 
     const row = document.createElement('div');
     row.className = 'chat-msg-row' + (isMine ? ' chat-msg-row--mine' : '');
+    if (m.id) row.setAttribute('data-msg-id', m.id);
 
     const avatar = document.createElement('div');
     avatar.className = 'chat-avatar';

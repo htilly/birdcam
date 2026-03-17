@@ -7,6 +7,7 @@ const router = express.Router();
 const db = require('../db');
 const streamManager = require('../streamManager');
 const { requireLogin, requireSetup, requireNoSetup } = require('../middleware/auth');
+const { auditLog } = require('../middleware/audit');
 const { DEFAULT_FFMPEG_OPTIONS } = streamManager;
 
 function getFfmpegOptsForForm(camera) {
@@ -236,7 +237,9 @@ function nav(active) {
     { id: 'snapshots', label: 'Snapshots', icon: '&#x1F4F7;', href: '/admin/snapshots' },
     { id: 'visitors', label: 'Visitors', icon: '&#x1F4CA;', href: '/admin/visitors' },
     { id: 'users', label: 'Users', icon: '&#x1F465;', href: '/admin/users' },
+    { id: 'chat', label: 'Chat', icon: '&#x1F4AC;', href: '/admin/chat' },
     { id: 'settings', label: 'Settings', icon: '&#x2699;&#xFE0F;', href: '/admin/settings' },
+    { id: 'audit', label: 'Audit Log', icon: '&#x1F4DC;', href: '/admin/audit' },
   ];
   const links = items.map(i =>
     `<a href="${i.href}" class="nav-item ${active === i.id ? 'active' : ''}"><span class="nav-icon">${i.icon}</span>${i.label}</a>`
@@ -313,11 +316,23 @@ router.post('/login', verifyCsrf, (req, res) => {
   const { username, password } = req.body || {};
   const user = db.findUserByUsername(username);
   if (!user || !db.verifyPassword(password, user.password_hash)) {
+    // Log failed login attempt
+    db.addAuditLog(null, username || 'unknown', 'auth.login.failed', 'Path: /login', req.ip, req.requestId);
     return res.redirect('/admin/login?msg=Invalid+username+or+password');
   }
-  req.session.userId = user.id;
-  req.session.username = user.username;
-  res.redirect('/admin');
+
+  // Regenerate session ID to prevent fixation (security review fix)
+  req.session.regenerate((err) => {
+    if (err) {
+      console.error('Session regeneration failed:', err);
+      return res.redirect('/admin/login?msg=Server+error');
+    }
+    req.session.userId = user.id;
+    req.session.username = user.username;
+    // Log successful login with authenticated user
+    db.addAuditLog(user.id, user.username, 'auth.login', 'Path: /login', req.ip, req.requestId);
+    res.redirect('/admin');
+  });
 });
 
 router.get('/logout', (req, res) => {
@@ -351,9 +366,19 @@ router.post('/setup', requireSetup, verifyCsrf, (req, res) => {
   }
   db.ensureAdmin(username, password);
   const user = db.findUserByUsername(username);
-  req.session.userId = user.id;
-  req.session.username = user.username;
-  res.redirect('/admin');
+
+  // Regenerate session ID to prevent fixation (security review fix)
+  req.session.regenerate((err) => {
+    if (err) {
+      console.error('Session regeneration failed:', err);
+      return res.redirect('/admin/setup?msg=Server+error');
+    }
+    req.session.userId = user.id;
+    req.session.username = user.username;
+    // Log setup with authenticated user
+    db.addAuditLog(user.id, user.username, 'auth.setup', 'Path: /setup', req.ip, req.requestId);
+    res.redirect('/admin');
+  });
 });
 
 // --- Dashboard ---
@@ -452,7 +477,7 @@ router.get('/cameras/new', requireLogin, (req, res) => {
   `));
 });
 
-router.post('/cameras', requireLogin, verifyCsrf, (req, res) => {
+router.post('/cameras', requireLogin, verifyCsrf, auditLog('camera.create'), (req, res) => {
   const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password } = req.body || {};
   if (!display_name || !rtsp_host) return res.redirect('/admin/cameras/new');
   const port = parseInt(rtsp_port) || 554;
@@ -518,7 +543,7 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
   `));
 });
 
-router.post('/cameras/:id', requireLogin, verifyCsrf, (req, res) => {
+router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'), (req, res) => {
   const id = Number(req.params.id);
   const c = db.getCamera(id);
   if (!c) return res.redirect('/admin');
@@ -538,7 +563,7 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, (req, res) => {
   }
 });
 
-router.post('/cameras/:id/delete', requireLogin, verifyCsrf, (req, res) => {
+router.post('/cameras/:id/delete', requireLogin, verifyCsrf, auditLog('camera.delete'), (req, res) => {
   const id = Number(req.params.id);
   if (db.getCamera(id)) {
     streamManager.stopStream(id);
@@ -611,7 +636,7 @@ router.get('/users/new', requireLogin, (req, res) => {
   `));
 });
 
-router.post('/users', requireLogin, verifyCsrf, (req, res) => {
+router.post('/users', requireLogin, verifyCsrf, auditLog('user.create'), (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password || password.length < 6) return res.redirect('/admin/users/new');
   const trimmed = username.trim();
@@ -642,7 +667,7 @@ router.get('/users/:id/edit', requireLogin, (req, res) => {
   `));
 });
 
-router.post('/users/:id', requireLogin, verifyCsrf, (req, res) => {
+router.post('/users/:id', requireLogin, verifyCsrf, auditLog('user.update'), (req, res) => {
   const id = Number(req.params.id);
   if (!db.getUser(id)) return res.redirect('/admin/users');
   const password = (req.body || {}).password;
@@ -651,7 +676,7 @@ router.post('/users/:id', requireLogin, verifyCsrf, (req, res) => {
   res.redirect('/admin/users');
 });
 
-router.post('/users/:id/delete', requireLogin, verifyCsrf, (req, res) => {
+router.post('/users/:id/delete', requireLogin, verifyCsrf, auditLog('user.delete'), (req, res) => {
   const id = Number(req.params.id);
   if (db.countUsers() <= 1) return res.redirect('/admin/users');
   if (!db.getUser(id)) return res.redirect('/admin/users');
@@ -766,14 +791,14 @@ router.get('/snapshots', requireLogin, (req, res) => {
   `));
 });
 
-router.post('/snapshots/:id/star', requireLogin, verifyCsrf, (req, res) => {
+router.post('/snapshots/:id/star', requireLogin, verifyCsrf, auditLog('snapshot.star'), (req, res) => {
   const id = Number(req.params.id);
   const starred = (req.body || {}).starred === '1';
   db.setSnapshotStarred(id, starred);
   res.redirect('/admin/snapshots?msg=' + (starred ? 'Snapshot+starred' : 'Snapshot+unstarred'));
 });
 
-router.post('/snapshots/:id/delete', requireLogin, verifyCsrf, (req, res) => {
+router.post('/snapshots/:id/delete', requireLogin, verifyCsrf, auditLog('snapshot.delete'), (req, res) => {
   const id = Number(req.params.id);
   const snap = db.getSnapshot(id);
   if (snap) {
@@ -786,7 +811,7 @@ router.post('/snapshots/:id/delete', requireLogin, verifyCsrf, (req, res) => {
   res.redirect('/admin/snapshots?msg=Snapshot+deleted');
 });
 
-router.post('/snapshots/bulk-delete', requireLogin, verifyCsrf, (req, res) => {
+router.post('/snapshots/bulk-delete', requireLogin, verifyCsrf, auditLog('snapshot.bulk-delete'), (req, res) => {
   let ids = req.body.ids || req.body['ids[]'] || [];
   if (!Array.isArray(ids)) ids = [ids];
   ids = ids.map(Number).filter(n => n > 0);
@@ -1016,7 +1041,7 @@ router.get('/settings', requireLogin, (req, res) => {
   `));
 });
 
-router.post('/settings', requireLogin, verifyCsrf, (req, res) => {
+router.post('/settings', requireLogin, verifyCsrf, auditLog('settings.update'), (req, res) => {
   db.setSetting('reverse_proxy', req.body.reverse_proxy === 'true' ? 'true' : 'false');
   db.setSetting('require_auth_streams', req.body.require_auth_streams === 'true' ? 'true' : 'false');
   // Rate limit settings (clamp to safe ranges)
@@ -1050,9 +1075,97 @@ router.post('/settings', requireLogin, verifyCsrf, (req, res) => {
 });
 
 // --- Invalidate all sessions ---
-router.post('/invalidate-sessions', requireLogin, verifyCsrf, (req, res) => {
+router.post('/invalidate-sessions', requireLogin, verifyCsrf, auditLog('sessions.invalidate'), (req, res) => {
   req.app.rotateSessionSecret();
   req.session.destroy(() => res.redirect('/admin/login?msg=All+sessions+invalidated'));
+});
+
+// --- Audit Log ---
+
+router.get('/audit', requireLogin, (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  const logs = db.getAuditLogs(Math.min(limit, 500)); // Max 500 entries
+
+  const logRows = logs.map(log => {
+    const timestamp = new Date(log.timestamp).toLocaleString('sv-SE');
+    const user = log.username ? escapeHtml(log.username) : '<em>unauthenticated</em>';
+    const actionClass = log.action.includes('delete') ? 'audit-action-danger' :
+                        log.action.includes('create') || log.action.includes('login') ? 'audit-action-success' :
+                        'audit-action-info';
+
+    let detailsHtml = '';
+    if (log.details) {
+      try {
+        const details = JSON.parse(log.details);
+        const detailItems = [];
+        if (details.path) detailItems.push(`Path: ${escapeHtml(details.path)}`);
+        if (details.params && Object.keys(details.params).length > 0) {
+          detailItems.push(`Params: ${escapeHtml(JSON.stringify(details.params))}`);
+        }
+        if (details.body && details.body !== '[REDACTED]') {
+          const bodyPreview = JSON.stringify(details.body).substring(0, 100);
+          detailItems.push(`Body: ${escapeHtml(bodyPreview)}${bodyPreview.length >= 100 ? '...' : ''}`);
+        }
+        detailsHtml = detailItems.join(' | ');
+      } catch (e) {
+        detailsHtml = escapeHtml(log.details.substring(0, 100));
+      }
+    }
+
+    return `
+      <tr>
+        <td style="white-space:nowrap;">${timestamp}</td>
+        <td>${user}</td>
+        <td><span class="badge ${actionClass}">${escapeHtml(log.action)}</span></td>
+        <td style="font-size:0.9em;color:#666;max-width:400px;overflow:hidden;text-overflow:ellipsis;">${detailsHtml}</td>
+        <td style="font-family:monospace;font-size:0.85em;color:#999;">${escapeHtml(log.ip_address || '-')}</td>
+        <td style="font-family:monospace;font-size:0.75em;color:#999;">${escapeHtml(log.request_id || '-').substring(0, 8)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  res.send(layout('Audit Log', nav('audit'), `
+    <h1>Audit Log</h1>
+    <p style="color:#666;margin-bottom:1rem;">Security events and admin actions. Showing last ${logs.length} entries.</p>
+
+    <style>
+      .audit-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+      .audit-table th { text-align: left; padding: 0.75rem 0.5rem; border-bottom: 2px solid #e2e8f0; background: #f7fafc; font-weight: 600; }
+      .audit-table td { padding: 0.75rem 0.5rem; border-bottom: 1px solid #e2e8f0; }
+      .audit-table tr:hover { background: #f7fafc; }
+      .badge { padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.85em; font-weight: 500; white-space: nowrap; }
+      .audit-action-success { background: #d1fae5; color: #065f46; }
+      .audit-action-danger { background: #fee2e2; color: #991b1b; }
+      .audit-action-info { background: #dbeafe; color: #1e40af; }
+    </style>
+
+    ${logs.length > 0 ? `
+      <table class="audit-table">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>User</th>
+            <th>Action</th>
+            <th>Details</th>
+            <th>IP Address</th>
+            <th>Request ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${logRows}
+        </tbody>
+      </table>
+      <div style="margin-top:1rem;text-align:center;color:#999;font-size:0.9em;">
+        ${logs.length >= limit ? `Showing ${limit} most recent entries. ` : ''}
+        <a href="/admin/audit?limit=500" style="color:#3b82f6;">Show more</a>
+      </div>
+    ` : `
+      <div class="empty-state">
+        <span class="empty-state-icon">&#x1F4DC;</span>
+        <p class="empty-state-text">No audit log entries yet.</p>
+      </div>
+    `}
+  `));
 });
 
 // --- Debug info API (reduced info for security) ---
@@ -1110,6 +1223,274 @@ router.get('/debug', requireLogin, (req, res) => {
     <pre id="log-output" class="debug-log"></pre>
     <script src="/admin/debug-page.js"></script>
   `));
+});
+
+// --- Chat Moderation ---
+
+router.get('/chat', requireLogin, (req, res) => {
+  const messages = db.getChatMessages(100);
+  const bans = db.listBans();
+  const msg = req.query.msg || '';
+  const chatDisabled = db.getSetting('chat_disabled') === 'true';
+  const nicknames = Array.from(new Set(messages.map(m => m.nickname))).sort((a, b) => a.localeCompare(b));
+  
+  const messageRows = messages.map(m => `
+    <tr data-id="${m.id}" data-nickname="${escapeHtml(m.nickname)}">
+      <td><input type="checkbox" class="msg-select" value="${m.id}"></td>
+      <td>${m.id}</td>
+      <td>${escapeHtml(m.nickname)}</td>
+      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(m.text)}</td>
+      <td style="font-size:0.85em;color:#999;">${new Date(m.time).toLocaleString('sv-SE')}</td>
+      <td style="font-family:monospace;font-size:0.85em;">${escapeHtml(m.ip_address || '-')}</td>
+      <td class="actions-cell">
+        <form method="post" action="/admin/chat/messages/${m.id}/delete" style="display:inline;">
+          ${csrfField(req)}
+          <button type="submit" class="btn btn-small btn-danger" title="Delete message">&#x1F5D1;</button>
+        </form>
+        <button type="button" class="btn btn-small btn-ghost select-user-btn" data-nickname="${escapeHtml(m.nickname)}" title="Select all messages from this user">Select user</button>
+        ${m.ip_address ? `
+          <form method="post" action="/admin/chat/ban" style="display:inline;">
+            ${csrfField(req)}
+            <input type="hidden" name="ip_address" value="${escapeHtml(m.ip_address)}">
+            <input type="hidden" name="reason" value="Banned from message #${m.id}">
+            <button type="submit" class="btn btn-small btn-warning" title="Ban IP">&#x1F6AB;</button>
+          </form>
+        ` : ''}
+      </td>
+    </tr>
+  `).join('');
+
+  const banRows = bans.map(b => `
+    <tr>
+      <td style="font-family:monospace;">${escapeHtml(b.ip_address)}</td>
+      <td>${escapeHtml(b.reason || '-')}</td>
+      <td>${escapeHtml(b.banned_by || '-')}</td>
+      <td style="font-size:0.85em;color:#999;">${new Date(b.created_at).toLocaleString('sv-SE')}</td>
+      <td class="actions-cell">
+        <form method="post" action="/admin/chat/unban" style="display:inline;">
+          ${csrfField(req)}
+          <input type="hidden" name="ip_address" value="${escapeHtml(b.ip_address)}">
+          <button type="submit" class="btn btn-small btn-primary" title="Unban">Unban</button>
+        </form>
+      </td>
+    </tr>
+  `).join('');
+
+  res.send(layout('Chat Moderation', nav('chat'), `
+    <h1>Chat Moderation</h1>
+    ${msg ? `<div class="alert alert-info">${escapeHtml(msg)}</div>` : ''}
+
+    <div class="card" style="margin-bottom:2rem;">
+      <h2>Chat Posting</h2>
+      <p style="color:#666;margin-bottom:1rem;">Current status: <strong>${chatDisabled ? 'Disabled' : 'Enabled'}</strong></p>
+      <form method="post" action="/admin/chat/toggle" style="display:inline;">
+        ${csrfField(req)}
+        <input type="hidden" name="chat_disabled" value="${chatDisabled ? 'false' : 'true'}">
+        <button type="submit" class="btn ${chatDisabled ? 'btn-primary' : 'btn-warning'}">${chatDisabled ? 'Enable New Messages' : 'Temporarily Disable New Messages'}</button>
+      </form>
+    </div>
+    
+    <div class="card" style="margin-bottom:2rem;">
+      <h2>Banned IPs (${bans.length})</h2>
+      <form method="post" action="/admin/chat/ban" class="admin-form" style="margin-bottom:1rem;display:flex;gap:0.5rem;align-items:flex-end;">
+        ${csrfField(req)}
+        <div style="flex:1;">
+          <label for="ban-ip">IP Address</label>
+          <input type="text" id="ban-ip" name="ip_address" required placeholder="e.g. 192.168.1.100">
+        </div>
+        <div style="flex:2;">
+          <label for="ban-reason">Reason (optional)</label>
+          <input type="text" id="ban-reason" name="reason" placeholder="Reason for ban">
+        </div>
+        <button type="submit" class="btn btn-warning">Ban IP</button>
+      </form>
+      ${bans.length > 0 ? `
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>IP Address</th>
+              <th>Reason</th>
+              <th>Banned By</th>
+              <th>Date</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${banRows}</tbody>
+        </table>
+      ` : '<p style="color:#999;">No banned IPs.</p>'}
+    </div>
+
+    <div class="card">
+      <h2>Chat Messages (${messages.length})</h2>
+      <div style="margin-bottom:1rem;display:flex;gap:0.5rem;">
+        <form method="post" action="/admin/chat/messages/bulk-delete" id="bulk-delete-form">
+          ${csrfField(req)}
+          <input type="hidden" name="ids" id="bulk-delete-ids">
+          <button type="submit" class="btn btn-danger" id="bulk-delete-btn" disabled>Delete Selected</button>
+        </form>
+        <form method="post" action="/admin/chat/clear" onsubmit="return confirm('Are you sure you want to delete ALL chat messages?');">
+          ${csrfField(req)}
+          <button type="submit" class="btn btn-danger">Clear All Messages</button>
+        </form>
+      </div>
+      <div style="margin-bottom:1rem;display:flex;gap:0.5rem;align-items:flex-end;">
+        <div>
+          <label for="select-user-nickname">Select messages from user</label>
+          <select id="select-user-nickname">
+            <option value="">Choose user...</option>
+            ${nicknames.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}
+          </select>
+        </div>
+        <button type="button" class="btn btn-small btn-ghost" id="select-user-btn">Select User Messages</button>
+        <button type="button" class="btn btn-small btn-ghost" id="clear-selection-btn">Clear Selection</button>
+      </div>
+      ${messages.length > 0 ? `
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="select-all"></th>
+              <th>ID</th>
+              <th>Nickname</th>
+              <th>Message</th>
+              <th>Time</th>
+              <th>IP</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${messageRows}</tbody>
+        </table>
+      ` : '<p style="color:#999;">No chat messages.</p>'}
+    </div>
+
+    <script>
+      (function() {
+        const selectAll = document.getElementById('select-all');
+        const checkboxes = document.querySelectorAll('.msg-select');
+        const bulkBtn = document.getElementById('bulk-delete-btn');
+        const bulkIds = document.getElementById('bulk-delete-ids');
+        const rows = document.querySelectorAll('tr[data-id]');
+        const selectUserNickname = document.getElementById('select-user-nickname');
+        const selectUserBtn = document.getElementById('select-user-btn');
+        const clearSelectionBtn = document.getElementById('clear-selection-btn');
+        const selectUserInlineButtons = document.querySelectorAll('.select-user-btn');
+        
+        function updateBulkBtn() {
+          const selected = Array.from(checkboxes).filter(c => c.checked).map(c => c.value);
+          bulkBtn.disabled = selected.length === 0;
+          bulkIds.value = selected.join(',');
+
+          if (selectAll) {
+            const checkedCount = Array.from(checkboxes).filter(c => c.checked).length;
+            selectAll.checked = checkedCount > 0 && checkedCount === checkboxes.length;
+            selectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+          }
+        }
+
+        function selectMessagesByNickname(nickname) {
+          if (!nickname) return;
+          rows.forEach((row) => {
+            const cb = row.querySelector('.msg-select');
+            if (!cb) return;
+            cb.checked = row.getAttribute('data-nickname') === nickname;
+          });
+          updateBulkBtn();
+        }
+        
+        if (selectAll) {
+          selectAll.addEventListener('change', function() {
+            checkboxes.forEach(c => c.checked = this.checked);
+            updateBulkBtn();
+          });
+        }
+
+        if (selectUserBtn) {
+          selectUserBtn.addEventListener('click', function() {
+            selectMessagesByNickname(selectUserNickname.value);
+          });
+        }
+
+        if (clearSelectionBtn) {
+          clearSelectionBtn.addEventListener('click', function() {
+            checkboxes.forEach(c => c.checked = false);
+            updateBulkBtn();
+          });
+        }
+
+        selectUserInlineButtons.forEach(btn => {
+          btn.addEventListener('click', function() {
+            const nickname = this.getAttribute('data-nickname');
+            if (selectUserNickname) selectUserNickname.value = nickname;
+            selectMessagesByNickname(nickname);
+          });
+        });
+        
+        checkboxes.forEach(c => c.addEventListener('change', updateBulkBtn));
+      })();
+    </script>
+  `));
+});
+
+router.post('/chat/messages/:id/delete', requireLogin, verifyCsrf, auditLog('chat.message.delete'), (req, res) => {
+  const id = Number(req.params.id);
+  db.deleteChatMessage(id);
+  
+  // Update in-memory cache and broadcast
+  if (req.app.locals.reloadChatMessages) req.app.locals.reloadChatMessages();
+  if (req.app.locals.broadcastDeleteMessages) req.app.locals.broadcastDeleteMessages([id]);
+  
+  res.redirect('/admin/chat?msg=Message+deleted');
+});
+
+router.post('/chat/messages/bulk-delete', requireLogin, verifyCsrf, auditLog('chat.messages.bulk-delete'), (req, res) => {
+  const idsStr = req.body.ids || '';
+  const ids = idsStr.split(',').map(s => Number(s.trim())).filter(n => !isNaN(n) && n > 0);
+  
+  if (ids.length > 0) {
+    db.deleteChatMessages(ids);
+    if (req.app.locals.reloadChatMessages) req.app.locals.reloadChatMessages();
+    if (req.app.locals.broadcastDeleteMessages) req.app.locals.broadcastDeleteMessages(ids);
+  }
+  
+  res.redirect('/admin/chat?msg=' + encodeURIComponent(`${ids.length} message(s) deleted`));
+});
+
+router.post('/chat/clear', requireLogin, verifyCsrf, auditLog('chat.clear'), (req, res) => {
+  db.clearAllChatMessages();
+  if (req.app.locals.reloadChatMessages) req.app.locals.reloadChatMessages();
+  if (req.app.locals.broadcastClearChat) req.app.locals.broadcastClearChat();
+  
+  res.redirect('/admin/chat?msg=All+messages+cleared');
+});
+
+router.post('/chat/toggle', requireLogin, verifyCsrf, auditLog('chat.toggle'), (req, res) => {
+  const disablePosting = req.body.chat_disabled === 'true';
+  db.setSetting('chat_disabled', disablePosting ? 'true' : 'false');
+  res.redirect('/admin/chat?msg=' + encodeURIComponent(disablePosting
+    ? 'New chat messages temporarily disabled'
+    : 'New chat messages enabled'));
+});
+
+router.post('/chat/ban', requireLogin, verifyCsrf, auditLog('chat.ban'), (req, res) => {
+  const ipAddress = String(req.body.ip_address || '').trim();
+  const reason = String(req.body.reason || '').trim().slice(0, 200);
+  
+  if (!ipAddress) {
+    return res.redirect('/admin/chat?msg=IP+address+required');
+  }
+  
+  db.addBan(ipAddress, reason || null, req.session.username);
+  res.redirect('/admin/chat?msg=' + encodeURIComponent(`IP ${ipAddress} banned`));
+});
+
+router.post('/chat/unban', requireLogin, verifyCsrf, auditLog('chat.unban'), (req, res) => {
+  const ipAddress = String(req.body.ip_address || '').trim();
+  
+  if (!ipAddress) {
+    return res.redirect('/admin/chat?msg=IP+address+required');
+  }
+  
+  db.removeBan(ipAddress);
+  res.redirect('/admin/chat?msg=' + encodeURIComponent(`IP ${ipAddress} unbanned`));
 });
 
 module.exports = router;

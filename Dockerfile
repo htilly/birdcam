@@ -1,5 +1,8 @@
 FROM node:20-bookworm-slim
 
+# Accept git commit hash as build arg (for production builds)
+ARG GIT_COMMIT=unknown
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
   ffmpeg \
   python3 make g++ \
@@ -21,6 +24,7 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENV NODE_ENV=production
+ENV GIT_COMMIT=${GIT_COMMIT}
 EXPOSE 3000
 
 ENTRYPOINT ["/entrypoint.sh"]

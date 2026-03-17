@@ -66,12 +66,17 @@
 
   fetch('/api/build-info').then(function(r) { return r.json(); }).then(function(data) {
     var buildEl = document.getElementById('build-number');
-    if (buildEl && data.buildTime) {
-      var d = new Date(data.buildTime);
-      d.setHours(d.getHours() + 1);
-      var formatted = d.toISOString().slice(0, 10).replace(/-/g, '') +
-                      d.toISOString().slice(11, 16).replace(':', '');
-      buildEl.textContent = 'v' + formatted;
+    if (buildEl) {
+      // Prefer git commit hash (production) over date version (local dev)
+      if (data.gitCommit) {
+        buildEl.textContent = 'v' + data.gitCommit;
+      } else if (data.buildTime) {
+        var d = new Date(data.buildTime);
+        d.setHours(d.getHours() + 1);
+        var formatted = d.toISOString().slice(0, 10).replace(/-/g, '') +
+                        d.toISOString().slice(11, 16).replace(':', '');
+        buildEl.textContent = 'v' + formatted;
+      }
     }
   }).catch(function() {});
 })();
