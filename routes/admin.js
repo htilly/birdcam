@@ -1075,6 +1075,36 @@ router.get('/settings', requireLogin, (req, res) => {
           Set a value to <code>0</code> to disable that constraint.
         </p>
       </fieldset>
+      <fieldset class="settings-group">
+        <legend>Detection</legend>
+        <p class="field-hint" style="margin-top:0;">
+          Live controls for the motion detector runtime configuration.
+          Changes are applied immediately and affect which incidents get recorded.
+        </p>
+        <div class="form-row" style="align-items:flex-end;">
+          <div>
+            <label for="motion-sensitivity">Sensitivity</label>
+            <select id="motion-sensitivity">
+              <option value="2">Low</option>
+              <option value="3" selected>Medium</option>
+              <option value="4">High</option>
+            </select>
+          </div>
+          <div style="min-width:240px;">
+            <label for="motion-cooldown">Notification cooldown</label>
+            <input type="range" id="motion-cooldown" min="5" max="120" value="30" step="5" style="width:100%;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.25rem;">
+              <span class="field-hint" style="margin:0;padding:0;opacity:0.85;">5s</span>
+              <span class="field-hint" id="motion-cooldown-val" style="margin:0;padding:0;opacity:0.95;font-weight:700;">30s</span>
+              <span class="field-hint" style="margin:0;padding:0;opacity:0.85;">2 min</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:0.75rem;">
+          <button type="button" class="btn btn-small btn-primary" id="motion-apply">Apply to detector</button>
+          <span class="field-hint" id="motion-live-status" style="margin-left:0.75rem;">Connecting to detector…</span>
+        </div>
+      </fieldset>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Save settings</button>
         <a href="/admin" class="btn btn-ghost">Cancel</a>
@@ -1126,6 +1156,95 @@ router.get('/settings', requireLogin, (req, res) => {
     </div>
 
     <script src="/admin/settings-debug.js"></script>
+    <script>
+      (function () {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = proto + '//' + location.host + '/motion-ws';
+        const ws = new WebSocket(wsUrl);
+
+        const sensitivityEl = document.getElementById('motion-sensitivity');
+        const cooldownEl = document.getElementById('motion-cooldown');
+        const cooldownValEl = document.getElementById('motion-cooldown-val');
+        const applyBtn = document.getElementById('motion-apply');
+        const statusEl = document.getElementById('motion-live-status');
+
+        // Matches the mapping used in /experimental/
+        const MIN_AREA_MAP = { 2: 4000, 3: 1500, 4: 600 };
+        const thresholdFromSensitivity = (sens) => Number(sens) >= 4 ? 0.001 : 0.005;
+
+        function setCooldownVal(v) {
+          const n = Number(v);
+          if (Number.isFinite(n)) cooldownValEl.textContent = n + 's';
+        }
+
+        function currentConfigPayload() {
+          const sens = Number(sensitivityEl.value);
+          const cooldownSec = Number(cooldownEl.value);
+          return {
+            type: 'config_update',
+            min_area: MIN_AREA_MAP[sens] || 1500,
+            threshold_fraction: thresholdFromSensitivity(sens),
+            cooldown_sec: cooldownSec,
+          };
+        }
+
+        function sendConfigUpdate() {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify(currentConfigPayload()));
+        }
+
+        ws.addEventListener('open', function () {
+          statusEl.textContent = 'Connected to detector';
+        });
+
+        ws.addEventListener('message', function (ev) {
+          let msg = null;
+          try { msg = JSON.parse(ev.data); } catch (_) {}
+          if (!msg) return;
+
+          if (msg.type === 'config') {
+            // Update cooldown
+            if (msg.cooldown_sec !== undefined) {
+              cooldownEl.value = Number(msg.cooldown_sec);
+              setCooldownVal(cooldownEl.value);
+            }
+
+            // Update sensitivity by nearest min_area bucket
+            if (msg.min_area !== undefined) {
+              const minArea = Number(msg.min_area);
+              const candidates = Object.keys(MIN_AREA_MAP).map(s => ({
+                sens: Number(s),
+                dist: Math.abs(MIN_AREA_MAP[s] - minArea),
+              }));
+              candidates.sort((a, b) => a.dist - b.dist);
+              const best = candidates[0] && Number.isFinite(candidates[0].sens) ? candidates[0].sens : Number(sensitivityEl.value);
+              if (best) sensitivityEl.value = String(best);
+            }
+
+            statusEl.textContent = 'Detector config applied';
+          }
+
+          if (msg.type === 'backend_connected') {
+            statusEl.textContent = 'Detector backend online';
+          }
+        });
+
+        ws.addEventListener('close', function () {
+          statusEl.textContent = 'Detector connection closed (refresh page to reconnect)';
+        });
+
+        ws.addEventListener('error', function () {
+          statusEl.textContent = 'Detector connection error';
+        });
+
+        applyBtn.addEventListener('click', function () {
+          statusEl.textContent = 'Applying…';
+          sendConfigUpdate();
+        });
+
+        cooldownEl.addEventListener('input', function () { setCooldownVal(this.value); });
+      })();
+    </script>
   `));
 });
 

@@ -10,7 +10,6 @@
  *  - Bouncing box animation mode
  *  - Motion heatmap accumulation
  *  - Web Push subscribe/unsubscribe
- *  - Configurable detection sensitivity (sends config_update to backend)
  *  - Motion event log
  *  - FPS counter
  */
@@ -35,10 +34,6 @@
   const pushStatus   = document.getElementById('push-status');
 
   // Controls
-  const sensitivitySlider = document.getElementById('sensitivity');
-  const sensitivityVal    = document.getElementById('sensitivity-val');
-  const cooldownSlider    = document.getElementById('cooldown');
-  const cooldownVal       = document.getElementById('cooldown-val');
   const toggleBoxes       = document.getElementById('toggle-boxes');
   const toggleBounce      = document.getElementById('toggle-bounce');
   const toggleHeatmap     = document.getElementById('toggle-heatmap');
@@ -206,23 +201,6 @@
 
   // Motion banner auto-hide timer
   let bannerTimer = null;
-
-  // Sensitivity → min_area mapping
-  const SENSITIVITY_MAP = {
-    1: 8000,   // Low    — only large movements
-    2: 4000,   // Low-med
-    3: 1500,   // Medium (default)
-    4: 600,    // Med-high
-    5: 200,    // High   — very sensitive
-  };
-
-  const SENSITIVITY_LABELS = {
-    1: 'Low',
-    2: 'Low-med',
-    3: 'Medium',
-    4: 'High',
-    5: 'Very high',
-  };
 
   // ---------------------------------------------------------------------------
   // Resize canvas to match video
@@ -678,39 +656,11 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Config sync to backend
+  // Detector config updates (moved to Admin)
   // ---------------------------------------------------------------------------
-  function applyRemoteConfig(cfg) {
-    // Sync sliders if backend has different values (initial load)
-    if (cfg.cooldown_sec !== undefined) {
-      cooldownSlider.value = cfg.cooldown_sec;
-      cooldownVal.textContent = cfg.cooldown_sec + 's';
-    }
+  function applyRemoteConfig(_) {
+    // Intentionally no-op: Detection controls are now only available in Admin.
   }
-
-  function sendConfigUpdate() {
-    const sensitivity = parseInt(sensitivitySlider.value, 10);
-    sendWs({
-      type: 'config_update',
-      min_area: SENSITIVITY_MAP[sensitivity] || 1500,
-      threshold_fraction: sensitivity >= 4 ? 0.001 : 0.005,
-      cooldown_sec: parseInt(cooldownSlider.value, 10),
-    });
-  }
-
-  // Sensitivity slider
-  sensitivitySlider.addEventListener('input', () => {
-    const v = parseInt(sensitivitySlider.value, 10);
-    sensitivityVal.textContent = SENSITIVITY_LABELS[v] || 'Medium';
-    sendConfigUpdate();
-  });
-
-  // Cooldown slider
-  cooldownSlider.addEventListener('input', () => {
-    const v = parseInt(cooldownSlider.value, 10);
-    cooldownVal.textContent = v + 's';
-    sendConfigUpdate();
-  });
 
   // ---------------------------------------------------------------------------
   // Overlay controls
