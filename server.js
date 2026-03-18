@@ -181,7 +181,15 @@ app.use('/admin/login', (req, res, next) => _loginLimiterState.limiter(req, res,
 app.use('/admin/setup', (req, res, next) => _setupLimiterState.limiter(req, res, next));
 app.use('/api', (req, res, next) => _apiLimiterState.limiter(req, res, next));
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders(res, filePath) {
+    // Force revalidation of JS/CSS on every request so Cloudflare always
+    // serves the latest version after a deploy (ETag still avoids re-download).
+    if (/\.(js|css)$/.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  },
+}));
 
 // HLS streams — optionally require auth
 app.use('/hls', (req, res, next) => {
