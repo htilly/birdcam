@@ -47,7 +47,7 @@ VAPID_PUBLIC_KEY  = os.environ.get('VAPID_PUBLIC_KEY', '')
 VAPID_CLAIMS_SUB  = os.environ.get('VAPID_CLAIMS_SUB', 'mailto:admin@example.com')
 
 # Path to file where browser push subscriptions are stored (JSON array)
-SUBSCRIPTIONS_FILE = os.environ.get('SUBSCRIPTIONS_FILE', 'subscriptions.json')
+SUBSCRIPTIONS_FILE = os.environ.get('SUBSCRIPTIONS_FILE', '/app/data/subscriptions.json')
 
 # --- Reconnect ---
 # Seconds to wait before reconnecting to RTSP on failure

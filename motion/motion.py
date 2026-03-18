@@ -124,13 +124,13 @@ async def handle_relay_message(raw: str):
         await send_to_relay({'type': 'pong'})
 
 
-async def relay_connection_loop():
+async def relay_connection_loop(stop_event: asyncio.Event):
     """Maintain a persistent WebSocket connection to the Node.js relay."""
     global _relay_ws
     backoff = [2, 5, 10, 30]
     attempt = 0
 
-    while True:
+    while not stop_event.is_set():
         url = config.RELAY_URL
         try:
             logger.info(f"Connecting to relay at {url}")
@@ -140,6 +140,8 @@ async def relay_connection_loop():
                 logger.info("Connected to relay.")
                 await ws.send(json.dumps({'type': 'config', **runtime_config}))
                 async for raw in ws:
+                    if stop_event.is_set():
+                        break
                     await handle_relay_message(raw)
         except (websockets.exceptions.ConnectionClosed, OSError) as e:
             logger.warning(f"Relay connection lost: {e}")
@@ -148,10 +150,16 @@ async def relay_connection_loop():
         finally:
             _relay_ws = None
 
+        if stop_event.is_set():
+            break
+
         delay = backoff[min(attempt, len(backoff) - 1)]
         attempt += 1
         logger.info(f"Reconnecting to relay in {delay}s (attempt {attempt})")
-        await asyncio.sleep(delay)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +239,7 @@ def process_frame(frame, bg_subtractor) -> tuple[bool, list, int, int]:
     return motion_detected, boxes, w, h
 
 
-async def run_motion_loop(loop: asyncio.AbstractEventLoop):
+async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event):
     """
     Main RTSP capture and motion detection loop.
     Runs indefinitely, reconnecting on failure.
@@ -241,7 +249,7 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop):
     bg_subtractor = build_detector()
     warmup_frames = 30  # Let background model stabilise before detecting
 
-    while True:
+    while not stop_event.is_set():
         # Resolve RTSP URL either from env or from DB (first camera).
         rtsp_url = config.RTSP_URL.strip() if isinstance(config.RTSP_URL, str) else ''
         if not rtsp_url:
@@ -280,7 +288,7 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop):
         MAX_FAILURES = 10
 
         try:
-            while True:
+            while not stop_event.is_set():
                 ret, frame = await asyncio.to_thread(cap.read)
                 if not ret:
                     consecutive_failures += 1
@@ -322,7 +330,17 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop):
                         last_notification_time = now
                         logger.info(f"Motion detected! {len(boxes)} region(s). Sending push...")
                         # Run push in background so it doesn't block frame processing
-                        asyncio.ensure_future(send_push_async(len(boxes)))
+                        push_task = asyncio.create_task(send_push_async(len(boxes)))
+
+                        def _on_push_done(t: asyncio.Task):
+                            try:
+                                _ = t.result()
+                            except asyncio.CancelledError:
+                                return
+                            except Exception:
+                                logger.exception("Background push notification task failed")
+
+                        push_task.add_done_callback(_on_push_done)
 
                 # Debug window (disabled by default)
                 if config.DEBUG_WINDOW:
@@ -342,12 +360,18 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop):
                 # Target ~10fps for detection (100ms per frame)
                 await asyncio.sleep(0.1)
 
+        except asyncio.CancelledError:
+            # Allow task cancellation to stop the detector cleanly.
+            raise
         except Exception as e:
             logger.error(f"Error in motion loop: {e}")
         finally:
             cap.release()
             if config.DEBUG_WINDOW:
                 cv2.destroyAllWindows()
+
+        if stop_event.is_set():
+            return
 
         logger.info(f"Stream ended. Reconnecting in {config.RECONNECT_DELAY_SEC}s...")
         await send_to_relay({'type': 'status', 'connected': False, 'message': 'Stream interrupted. Reconnecting...'})
@@ -394,12 +418,27 @@ async def main():
         except NotImplementedError:
             pass
 
+    relay_task = asyncio.create_task(relay_connection_loop(stop_event))
+    motion_task = asyncio.create_task(run_motion_loop(loop, stop_event))
+    stop_wait_task = asyncio.create_task(stop_event.wait())
+
     try:
-        await asyncio.gather(
-            relay_connection_loop(),
-            run_motion_loop(loop),
-            stop_event.wait(),
+        done, pending = await asyncio.wait(
+            {relay_task, motion_task, stop_wait_task},
+            return_when=asyncio.FIRST_COMPLETED,
         )
+
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+        # If a loop task failed, surface the error.
+        for task in done:
+            if task is stop_wait_task:
+                continue
+            exc = task.exception()
+            if exc:
+                raise exc
     finally:
         logger.info("Motion detector stopped.")
 

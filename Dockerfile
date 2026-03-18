@@ -1,4 +1,6 @@
-FROM node:20-bookworm-slim
+# Use Debian bullseye so `python3` is 3.9 in all target architectures.
+# This ensures `opencv-python-headless` can resolve prebuilt wheels for `linux/arm/v7`.
+FROM node:20-bullseye-slim
 
 # Accept git commit hash as build arg (for production builds)
 ARG GIT_COMMIT=unknown

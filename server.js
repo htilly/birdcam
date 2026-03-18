@@ -398,9 +398,31 @@ motionWss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://localhost');
   const role = url.searchParams.get('role');
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+  const origin = req.headers.origin;
+  const host = req.headers.host || '';
+
+  const isLocalIp =
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip === '::ffff:127.0.0.1';
+
+  const motionDetectorToken = url.searchParams.get('token') || req.headers['x-motion-token'];
 
   if (role === 'detector') {
     // --- Motion detector (Python) connecting ---
+    const expectedDetectorToken = process.env.MOTION_DETECTOR_TOKEN || '';
+    if (expectedDetectorToken) {
+      if (!motionDetectorToken || motionDetectorToken !== expectedDetectorToken) {
+        console.warn(`[motion-ws] Rejecting detector connection from ip=${ip}: invalid or missing token`);
+        try { ws.close(1008, 'unauthorized'); } catch (_) {}
+        return;
+      }
+    } else if (!isLocalIp) {
+      console.warn(`[motion-ws] Rejecting detector connection from non-local ip=${ip} (no MOTION_DETECTOR_TOKEN configured)`);
+      try { ws.close(1008, 'unauthorized'); } catch (_) {}
+      return;
+    }
+
     if (_motionDetector && _motionDetector.readyState === 1) {
       console.log(`[motion-ws] Replacing existing detector connection with new one from ip=${ip}`);
       _motionDetector.close(1000, 'replaced');
@@ -432,6 +454,29 @@ motionWss.on('connection', (ws, req) => {
   }
 
   // --- Browser client ---
+  if (process.env.MOTION_WS_ALLOWED_ORIGIN) {
+    // If configured, only accept exact Origin header match.
+    if (origin !== process.env.MOTION_WS_ALLOWED_ORIGIN) {
+      console.warn(`[motion-ws] Rejecting browser connection from ip=${ip} with origin=${origin}`);
+      try { ws.close(1008, 'origin not allowed'); } catch (_) {}
+      return;
+    }
+  } else if (origin) {
+    // Default: enforce host match for browser-originated connections.
+    try {
+      const o = new URL(origin);
+      if (o.host !== host) {
+        console.warn(`[motion-ws] Rejecting browser connection origin host mismatch ip=${ip} origin=${origin} host=${host}`);
+        try { ws.close(1008, 'origin not allowed'); } catch (_) {}
+        return;
+      }
+    } catch (_) {
+      console.warn(`[motion-ws] Rejecting browser connection with invalid origin ip=${ip}`);
+      try { ws.close(1008, 'Invalid origin'); } catch (_) {}
+      return;
+    }
+  }
+
   motionBrowserClients.add(ws);
   console.log(`[motion-ws] Browser connected ip=${ip} (total: ${motionBrowserClients.size})`);
 
