@@ -35,12 +35,9 @@ RUN groupadd -r birdcam && useradd -r -g birdcam -d /app birdcam \
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-COPY run-app-with-motion.sh /app/run-app-with-motion.sh
-RUN chmod +x /app/run-app-with-motion.sh
-
 ENV NODE_ENV=production
 ENV GIT_COMMIT=${GIT_COMMIT}
 EXPOSE 3000
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["/app/run-app-with-motion.sh", "node", "server.js"]
+CMD ["node", "server.js"]

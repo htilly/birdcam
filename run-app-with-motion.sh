@@ -21,17 +21,8 @@ cleanup() {
 
 trap 'cleanup; exit 0' TERM INT
 
-if [ "${ENABLE_MOTION_DETECTOR:-false}" = "true" ]; then
-  echo "[motion-launcher] Starting motion detector in 3s..."
-  (
-    sleep 3
-    echo "[motion-launcher] Launching python3 motion/motion.py"
-    python3 -u motion/motion.py 2>&1
-    exit_code=$?
-    echo "[motion-launcher] motion.py exited with code $exit_code"
-  ) &
-  motion_pid=$!
-fi
+# Motion detector is now managed by Node.js (motionManager.js) — no longer launched here.
+# The shell script remains for compatibility but doesn't start motion.py anymore.
 
 # Run the main Node.js process (foreground).
 "$@"
