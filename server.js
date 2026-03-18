@@ -25,6 +25,11 @@ const { execSync } = require('child_process');
 // Get Git commit hash if available
 let GIT_COMMIT = process.env.GIT_COMMIT || null;
 
+// Truncate to 7 chars (short hash)
+if (GIT_COMMIT && GIT_COMMIT.length > 7) {
+  GIT_COMMIT = GIT_COMMIT.slice(0, 7);
+}
+
 // If not set via env var, try to detect from git (local development)
 if (!GIT_COMMIT || GIT_COMMIT === 'unknown') {
   try {
