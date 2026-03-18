@@ -75,10 +75,18 @@
   const heatCtx    = heatCanvas.getContext('2d');
 
   // Stats tracking
-  let eventCount = 0;
-  let frameCount = 0;
+  let visitCount  = 0;  // one per "visit" (burst of motion frames = one event)
+  let frameCount  = 0;
   let lastFpsTime = performance.now();
   let fpsDisplay  = 0;
+
+  // Visit (motion burst) grouping state
+  // Matches server-side cooldown so the log entry represents exactly one recording.
+  let visitCooldownMs   = 30000; // updated from server config messages
+  let activeVisitEl     = null;  // the live <li> being updated
+  let activeVisitStart  = null;  // Date of first frame in visit
+  let activeVisitMaxReg = 0;     // max regions seen during visit
+  let visitSealTimer    = null;  // setTimeout handle to seal the visit
 
   // Rolling motion stats (persisted locally so refresh keeps history)
   //
@@ -203,15 +211,45 @@
   let bannerTimer = null;
 
   // ---------------------------------------------------------------------------
-  // Resize canvas to match video
+  // Resize canvas to match video, and compute the actual rendered video area
+  // inside the object-fit:contain box (letterbox / pillarbox offset).
   // ---------------------------------------------------------------------------
+  let videoInnerRect = { x: 0, y: 0, w: 0, h: 0 }; // updated by syncCanvasSize
+
   function syncCanvasSize() {
     const rect = video.getBoundingClientRect();
-    if (canvas.width !== rect.width || canvas.height !== rect.height) {
-      canvas.width  = rect.width  || video.videoWidth  || 640;
-      canvas.height = rect.height || video.videoHeight || 480;
-      heatCanvas.width  = canvas.width;
-      heatCanvas.height = canvas.height;
+    const cw = rect.width  || video.videoWidth  || 640;
+    const ch = rect.height || video.videoHeight || 480;
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width  = cw;
+      canvas.height = ch;
+      heatCanvas.width  = cw;
+      heatCanvas.height = ch;
+    }
+
+    // Compute the rendered frame area inside object-fit:contain.
+    const vw = video.videoWidth  || cw;
+    const vh = video.videoHeight || ch;
+    if (vw > 0 && vh > 0) {
+      const videoAspect   = vw / vh;
+      const containerAspect = cw / ch;
+      let innerW, innerH, offsetX, offsetY;
+      if (videoAspect > containerAspect) {
+        // Letterbox (bars top/bottom)
+        innerW  = cw;
+        innerH  = cw / videoAspect;
+        offsetX = 0;
+        offsetY = (ch - innerH) / 2;
+      } else {
+        // Pillarbox (bars left/right)
+        innerH  = ch;
+        innerW  = ch * videoAspect;
+        offsetX = (cw - innerW) / 2;
+        offsetY = 0;
+      }
+      videoInnerRect = { x: offsetX, y: offsetY, w: innerW, h: innerH };
+    } else {
+      videoInnerRect = { x: 0, y: 0, w: cw, h: ch };
     }
   }
 
@@ -243,7 +281,14 @@
     if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
 
     if (typeof Hls !== 'undefined' && Hls.isSupported()) {
-      hlsInstance = new Hls({ lowLatencyMode: true, liveSyncDurationCount: 2 });
+      hlsInstance = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        liveSyncDurationCount: 1,
+        liveMaxLatencyDurationCount: 3,
+        maxBufferLength: 4,
+        maxMaxBufferLength: 8,
+      });
       hlsInstance.loadSource(src);
       hlsInstance.attachMedia(video);
       hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -359,45 +404,63 @@
   function handleMotionEvent(msg) {
     const { detected, boxes, frame_w, frame_h, timestamp } = msg;
 
-    // Update regions stat
+    // Update live regions stat
     statRegions.textContent = boxes ? boxes.length : '0';
 
     if (detected && boxes && boxes.length > 0) {
-      eventCount++;
-      statEvents.textContent = eventCount;
       const tMs = Date.parse(timestamp);
-      if (Number.isFinite(tMs)) {
-        statLast.textContent = formatTime(new Date(tMs));
+      const tDate = Number.isFinite(tMs) ? new Date(tMs) : new Date();
+
+      statLast.textContent = formatTime(tDate);
+
+      // --- Visit grouping ---
+      // Reset the seal timer on every motion frame (same logic as server-side recording).
+      if (visitSealTimer) { clearTimeout(visitSealTimer); visitSealTimer = null; }
+
+      if (!activeVisitEl) {
+        // First frame of a new visit — open a new log entry and count it.
+        visitCount++;
+        statEvents.textContent = visitCount;
+        activeVisitStart  = tDate;
+        activeVisitMaxReg = boxes.length;
 
         recordMotionTimestamp(tMs);
         updateRollingMotionStats(Date.now());
         schedulePersistMotionHistory();
+
+        activeVisitEl = openVisitLogEntry(activeVisitStart, activeVisitMaxReg);
+        showMotionBanner();
       } else {
-        statLast.textContent = '—';
+        // Continuing visit — update max regions in the live entry.
+        if (boxes.length > activeVisitMaxReg) {
+          activeVisitMaxReg = boxes.length;
+          updateVisitLogEntry(activeVisitEl, activeVisitStart, tDate, activeVisitMaxReg, true);
+        } else {
+          updateVisitLogEntry(activeVisitEl, activeVisitStart, tDate, activeVisitMaxReg, true);
+        }
       }
 
-      // Show banner
-      showMotionBanner();
-
-      // Log entry
-      addLogEntry(boxes, timestamp);
+      // Seal after cooldown with no further motion (mirrors server recording end).
+      visitSealTimer = setTimeout(() => sealVisit(), visitCooldownMs);
 
       // Render overlay
       renderOverlay(boxes, frame_w, frame_h);
 
-      // Bounce mode — inject new bouncing boxes
-      if (showBounce) {
-        spawnBouncingBoxes(boxes, frame_w, frame_h);
-      }
-
-      // Heatmap accumulation
-      if (showHeatmap) {
-        accumulateHeat(boxes, frame_w, frame_h);
-      }
+      if (showBounce) spawnBouncingBoxes(boxes, frame_w, frame_h);
+      if (showHeatmap) accumulateHeat(boxes, frame_w, frame_h);
     } else {
       // No motion — clear overlay (fade out)
       fadeOverlay();
     }
+  }
+
+  function sealVisit() {
+    if (!activeVisitEl) return;
+    updateVisitLogEntry(activeVisitEl, activeVisitStart, new Date(), activeVisitMaxReg, false);
+    activeVisitEl    = null;
+    activeVisitStart = null;
+    activeVisitMaxReg = 0;
+    visitSealTimer   = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -418,12 +481,14 @@
 
     if (!showBoxes) return;
 
-    const scaleX = canvas.width  / (frameW || canvas.width);
-    const scaleY = canvas.height / (frameH || canvas.height);
+    // Scale from motion.py frame coords → canvas coords, with letterbox offset.
+    const { x: ox, y: oy, w: iw, h: ih } = videoInnerRect;
+    const scaleX = iw / (frameW || iw);
+    const scaleY = ih / (frameH || ih);
 
     boxes.forEach((box, i) => {
-      const x = box.x * scaleX;
-      const y = box.y * scaleY;
+      const x = ox + box.x * scaleX;
+      const y = oy + box.y * scaleY;
       const w = box.w * scaleX;
       const h = box.h * scaleY;
 
@@ -494,13 +559,14 @@
   // ---------------------------------------------------------------------------
   function spawnBouncingBoxes(boxes, frameW, frameH) {
     syncCanvasSize();
-    const scaleX = canvas.width  / (frameW || canvas.width);
-    const scaleY = canvas.height / (frameH || canvas.height);
+    const { x: ox, y: oy, w: iw, h: ih } = videoInnerRect;
+    const scaleX = iw / (frameW || iw);
+    const scaleY = ih / (frameH || ih);
 
     boxes.forEach(box => {
       bouncingBoxes.push({
-        x:   box.x * scaleX,
-        y:   box.y * scaleY,
+        x:   ox + box.x * scaleX,
+        y:   oy + box.y * scaleY,
         w:   box.w * scaleX,
         h:   box.h * scaleY,
         vx:  (Math.random() * 2 - 1) * 3,
@@ -550,8 +616,9 @@
   // Heatmap accumulation
   // ---------------------------------------------------------------------------
   function accumulateHeat(boxes, frameW, frameH) {
-    const scaleX = canvas.width  / (frameW || canvas.width);
-    const scaleY = canvas.height / (frameH || canvas.height);
+    const { x: ox, y: oy, w: iw, h: ih } = videoInnerRect;
+    const scaleX = iw / (frameW || iw);
+    const scaleY = ih / (frameH || ih);
 
     // Slowly fade existing heat
     heatCtx.globalAlpha = 0.02;
@@ -560,8 +627,8 @@
     heatCtx.globalAlpha = 1.0;
 
     boxes.forEach(box => {
-      const x = box.x * scaleX;
-      const y = box.y * scaleY;
+      const x = ox + box.x * scaleX;
+      const y = oy + box.y * scaleY;
       const w = box.w * scaleX;
       const h = box.h * scaleY;
 
@@ -597,30 +664,48 @@
   // ---------------------------------------------------------------------------
   // Event log
   // ---------------------------------------------------------------------------
-  function addLogEntry(boxes, timestamp) {
+  function openVisitLogEntry(startDate, maxRegions) {
     const empty = eventLog.querySelector('.event-empty');
     if (empty) empty.remove();
 
     const li = document.createElement('li');
     li.className = 'event-item new';
-    const t = new Date(timestamp);
-    li.innerHTML = `
-      <span class="event-time">${formatTime(t)}</span>
-      <span class="event-desc">${boxes.length} region${boxes.length !== 1 ? 's' : ''}</span>
-    `;
+    li.innerHTML = visitHtml(startDate, null, maxRegions, true);
     eventLog.prepend(li);
-
-    // Remove 'new' class after animation
     requestAnimationFrame(() => requestAnimationFrame(() => li.classList.remove('new')));
 
     // Limit log to 50 entries
     const items = eventLog.querySelectorAll('.event-item');
     if (items.length > 50) items[items.length - 1].remove();
+
+    return li;
+  }
+
+  function updateVisitLogEntry(li, startDate, endDate, maxRegions, active) {
+    li.innerHTML = visitHtml(startDate, endDate, maxRegions, active);
+  }
+
+  function visitHtml(startDate, endDate, maxRegions, active) {
+    const reg = `${maxRegions} region${maxRegions !== 1 ? 's' : ''}`;
+    const duration = endDate ? Math.round((endDate - startDate) / 1000) : null;
+    const durStr = duration != null ? `${duration}s` : '';
+    const activeMarker = active ? '<span class="event-active">●</span>' : '';
+    return `
+      <span class="event-time">${formatTime(startDate)}</span>
+      <span class="event-desc">${reg}${durStr ? ' · ' + durStr : ''}</span>
+      ${activeMarker}
+    `;
   }
 
   clearLogBtn.addEventListener('click', () => {
+    // Discard any active visit
+    if (visitSealTimer) { clearTimeout(visitSealTimer); visitSealTimer = null; }
+    activeVisitEl     = null;
+    activeVisitStart  = null;
+    activeVisitMaxReg = 0;
+
     eventLog.innerHTML = '<li class="event-empty">No motion detected yet.</li>';
-    eventCount = 0;
+    visitCount = 0;
     statEvents.textContent = '0';
     statLast.textContent = '—';
 
@@ -658,8 +743,11 @@
   // ---------------------------------------------------------------------------
   // Detector config updates (moved to Admin)
   // ---------------------------------------------------------------------------
-  function applyRemoteConfig(_) {
-    // Intentionally no-op: Detection controls are now only available in Admin.
+  function applyRemoteConfig(msg) {
+    // Capture cooldown so visit grouping matches the server-side recording window.
+    if (msg && msg.cooldown_sec != null) {
+      visitCooldownMs = Number(msg.cooldown_sec) * 1000 || 30000;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -802,6 +890,89 @@
   }
 
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Recorded clips
+  // ---------------------------------------------------------------------------
+  const clipsListEl      = document.getElementById('clips-list');
+  const clipsRefreshBtn  = document.getElementById('clips-refresh-btn');
+  let activeClipEl = null; // currently expanded <video> element
+
+  function loadClips() {
+    fetch('/api/motion-clips?limit=30')
+      .then(r => r.json())
+      .then(clips => renderClips(clips))
+      .catch(() => {
+        clipsListEl.innerHTML = '<p class="event-empty" style="padding:0.5rem 1rem;">Failed to load clips.</p>';
+      });
+  }
+
+  function renderClips(clips) {
+    if (!clips || clips.length === 0) {
+      clipsListEl.innerHTML = '<p class="event-empty" style="padding:0.5rem 1rem;">No recorded visits yet.</p>';
+      return;
+    }
+    clipsListEl.innerHTML = '';
+    clips.forEach(c => {
+      const div = document.createElement('div');
+      div.className = 'clip-item';
+
+      const start = c.started_at ? new Date(c.started_at) : null;
+      const end   = c.ended_at   ? new Date(c.ended_at)   : null;
+      const dur   = start && end ? Math.round((end - start) / 1000) : null;
+      const mb    = c.size_bytes ? (c.size_bytes / (1024 * 1024)).toFixed(1) : '?';
+      const timeStr = start ? formatTime(start) : '—';
+      const durStr  = dur != null ? `${dur}s` : '';
+      const star    = c.starred ? ' ★' : '';
+
+      div.innerHTML = `
+        <button class="clip-play-btn" data-filename="${c.filename || ''}">
+          <span class="clip-play-icon">▶</span>
+          <span class="clip-meta">
+            <span class="clip-time">${timeStr}${star}</span>
+            <span class="clip-info">${durStr ? durStr + ' · ' : ''}${mb} MB</span>
+          </span>
+        </button>
+        <div class="clip-player hidden"></div>
+      `;
+
+      const playBtn    = div.querySelector('.clip-play-btn');
+      const playerWrap = div.querySelector('.clip-player');
+
+      playBtn.addEventListener('click', () => {
+        const isOpen = !playerWrap.classList.contains('hidden');
+        // Close previously open player
+        if (activeClipEl && activeClipEl !== playerWrap) {
+          activeClipEl.innerHTML = '';
+          activeClipEl.classList.add('hidden');
+          activeClipEl.closest('.clip-item').querySelector('.clip-play-btn .clip-play-icon').textContent = '▶';
+        }
+        if (isOpen) {
+          playerWrap.innerHTML = '';
+          playerWrap.classList.add('hidden');
+          playBtn.querySelector('.clip-play-icon').textContent = '▶';
+          activeClipEl = null;
+        } else {
+          const vid = document.createElement('video');
+          vid.controls = true;
+          vid.autoplay = true;
+          vid.src = `/clips/${c.filename}`;
+          vid.style.width = '100%';
+          vid.style.borderRadius = '6px';
+          vid.style.marginTop = '0.4rem';
+          playerWrap.appendChild(vid);
+          playerWrap.classList.remove('hidden');
+          playBtn.querySelector('.clip-play-icon').textContent = '■';
+          activeClipEl = playerWrap;
+        }
+      });
+
+      clipsListEl.appendChild(div);
+    });
+  }
+
+  clipsRefreshBtn.addEventListener('click', loadClips);
+
+  // ---------------------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------------------
   let didInit = false;
@@ -815,6 +986,7 @@
     loadStream();
     connectWs();
     initPush();
+    loadClips();
   }
 
   // Add VAPID key endpoint to Node server — note: if not found we just skip push

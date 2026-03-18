@@ -47,6 +47,7 @@ function startMotionDetector() {
       MOTION_FRAME_WIDTH: '640',
       MOTION_FRAME_HEIGHT: '360',
       MOTION_FRAME_FORMAT: 'bgr24',
+      MOTION_CAMERA_ID: String(cameraId),
       VAPID_PRIVATE_KEY: vapidPrivateKey,
       VAPID_PUBLIC_KEY:  vapidPublicKey,
     },

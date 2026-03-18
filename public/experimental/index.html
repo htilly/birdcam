@@ -56,12 +56,21 @@
         <!-- Event log -->
         <div class="event-log-wrap">
           <div class="event-log-header">
-            <span class="event-log-title">Motion events</span>
+            <span class="event-log-title">Visits</span>
             <button class="btn-sm" id="clear-log-btn">Clear</button>
           </div>
           <ul class="event-log" id="event-log">
-            <li class="event-empty">No motion detected yet.</li>
+            <li class="event-empty">No visits detected yet.</li>
           </ul>
+        </div>
+
+        <!-- Recorded clips -->
+        <div class="clips-wrap">
+          <div class="event-log-header">
+            <span class="event-log-title">Recorded visits</span>
+            <button class="btn-sm" id="clips-refresh-btn">Refresh</button>
+          </div>
+          <div id="clips-list"><p class="event-empty" style="padding:0.5rem 1rem;">Loading clips…</p></div>
         </div>
       </section>
 
@@ -126,7 +135,7 @@
           <div class="stats-grid">
             <div class="stat-box">
               <span class="stat-num" id="stat-events">0</span>
-              <span class="stat-lbl">events</span>
+              <span class="stat-lbl">visits</span>
             </div>
             <div class="stat-box">
               <span class="stat-num" id="stat-regions">—</span>

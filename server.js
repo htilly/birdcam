@@ -308,6 +308,32 @@ app.get('/api/motion/vapid-public-key', (req, res) => {
   res.json({ publicKey: VAPID_PUBLIC_KEY });
 });
 
+// Public: list recent motion clips (no auth required — visible to all visitors)
+app.get('/api/motion-clips', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
+  const clips = db.listRecentMotionIncidents(limit);
+  res.json(clips.map(c => ({
+    id:           c.id,
+    started_at:   c.started_at,
+    ended_at:     c.ended_at,
+    size_bytes:   c.size_bytes,
+    camera_name:  c.camera_name,
+    starred:      !!c.starred,
+    filename:     path.basename(c.file_path || ''),
+  })));
+});
+
+// Public: serve motion clip MP4 files by filename (path-traversal safe)
+app.get('/clips/:filename', (req, res) => {
+  const filename = path.basename(req.params.filename); // strips any ../
+  if (!filename.endsWith('.mp4') || !/^[\w\-]+\.mp4$/.test(filename)) {
+    return res.status(400).send('Invalid filename');
+  }
+  const filePath = path.join(motionClipsDir, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+  res.sendFile(filePath);
+});
+
 const server = http.createServer(app);
 
 // --- WebSocket chat with rate limiting ---
