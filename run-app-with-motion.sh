@@ -22,8 +22,14 @@ cleanup() {
 trap 'cleanup; exit 0' TERM INT
 
 if [ "${ENABLE_MOTION_DETECTOR:-false}" = "true" ]; then
-  # Start motion detector in background. It has its own reconnect loops.
-  python3 motion/motion.py &
+  echo "[motion-launcher] Starting motion detector in 3s..."
+  (
+    sleep 3
+    echo "[motion-launcher] Launching python3 motion/motion.py"
+    python3 -u motion/motion.py 2>&1
+    exit_code=$?
+    echo "[motion-launcher] motion.py exited with code $exit_code"
+  ) &
   motion_pid=$!
 fi
 
