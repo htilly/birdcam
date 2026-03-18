@@ -1120,6 +1120,33 @@ router.get('/settings', requireLogin, (req, res) => {
       </form>
     </fieldset>
 
+    <fieldset class="settings-group settings-danger-zone" style="margin-top:1.5rem;">
+      <legend>&#9888; Danger Zone</legend>
+      <p class="field-hint" style="padding-left:0;margin:0 0 1rem;">These actions are permanent and cannot be undone.</p>
+
+      <div class="danger-zone-row">
+        <div class="danger-zone-desc">
+          <strong>Clear visitor history</strong>
+          <span class="field-hint" style="padding-left:0;display:block;margin-top:0.2rem;">Deletes all visitor tracking data. Stats on the Visitors page will reset to zero.</span>
+        </div>
+        <form method="post" action="/admin/reset-visitor-stats" data-confirm="This will permanently delete all visitor history. Continue?">
+          <input type="hidden" name="_csrf" value="${getCsrfToken(req)}">
+          <button type="submit" class="btn btn-danger">Clear visitor history</button>
+        </form>
+      </div>
+
+      <div class="danger-zone-row" style="margin-top:1rem;padding-top:1rem;border-top:1px solid rgba(220,38,38,0.15);">
+        <div class="danger-zone-desc">
+          <strong>Clear motion recordings</strong>
+          <span class="field-hint" style="padding-left:0;display:block;margin-top:0.2rem;">Deletes all motion incidents from the database and removes all MP4 files from disk, including starred clips.</span>
+        </div>
+        <form method="post" action="/admin/reset-motion-stats" data-confirm="This will permanently delete all motion recordings and their video files, including starred clips. Continue?">
+          <input type="hidden" name="_csrf" value="${getCsrfToken(req)}">
+          <button type="submit" class="btn btn-danger">Clear motion recordings</button>
+        </form>
+      </div>
+    </fieldset>
+
     <fieldset class="settings-group" style="margin-top:1.5rem;">
       <legend>Debug</legend>
       <div class="debug-build-info">
@@ -1295,6 +1322,19 @@ router.post('/settings', requireLogin, verifyCsrf, auditLog('settings.update'), 
 router.post('/invalidate-sessions', requireLogin, verifyCsrf, auditLog('sessions.invalidate'), (req, res) => {
   req.app.rotateSessionSecret();
   req.session.destroy(() => res.redirect('/admin/login?msg=All+sessions+invalidated'));
+});
+
+// --- Danger Zone: reset stats ---
+router.post('/reset-visitor-stats', requireLogin, verifyCsrf, auditLog('stats.reset_visitors'), (req, res) => {
+  db.clearVisitorHistory();
+  res.redirect('/admin/settings?msg=Visitor+history+cleared');
+});
+
+router.post('/reset-motion-stats', requireLogin, verifyCsrf, auditLog('stats.reset_motion'), (req, res) => {
+  const filePaths = db.clearMotionRecordings();
+  // Best-effort delete MP4 files from disk
+  filePaths.forEach(fp => { try { fs.unlinkSync(fp); } catch (_) {} });
+  res.redirect('/admin/settings?msg=Motion+recordings+cleared');
 });
 
 // --- Audit Log ---

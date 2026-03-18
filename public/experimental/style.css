@@ -304,6 +304,51 @@ body {
 .clip-player.hidden { display: none; }
 .clip-player { padding: 0 0.5rem 0.5rem; }
 
+/* Visit activity chart */
+.visits-chart-wrap {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  flex-shrink: 0;
+  margin-bottom: 0.75rem;
+}
+
+.visits-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.visits-chart-body {
+  padding: 0.75rem 1rem;
+}
+
+.timeline-toggle {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tl-btn {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.tl-btn:hover { background: rgba(0,0,0,0.05); }
+.tl-btn-active {
+  background: var(--motion);
+  color: #000;
+  border-color: var(--motion);
+}
+
 /* Event log */
 .event-log-wrap {
   background: var(--card-bg);

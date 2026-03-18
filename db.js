@@ -545,6 +545,42 @@ function listRecentMotionIncidents(limit = 30) {
   `).all(limit);
 }
 
+// --- Motion visit stats (for chart) ---
+function getMotionVisitStats() {
+  const d = getDb();
+  // Visits per hour for the last 24h (only ended incidents)
+  const byHour = d.prepare(`
+    SELECT strftime('%Y-%m-%dT%H', started_at) as hour, COUNT(*) as count
+    FROM motion_incidents
+    WHERE ended_at IS NOT NULL
+      AND datetime(started_at) >= datetime('now', '-24 hours')
+    GROUP BY strftime('%Y-%m-%dT%H', started_at)
+    ORDER BY hour
+  `).all();
+  // Visits per day for the last 7 days (only ended incidents)
+  const byDay = d.prepare(`
+    SELECT date(started_at, 'localtime') as date, COUNT(*) as count
+    FROM motion_incidents
+    WHERE ended_at IS NOT NULL
+      AND datetime(started_at) >= datetime('now', '-7 days')
+    GROUP BY date(started_at, 'localtime')
+    ORDER BY date
+  `).all();
+  return { byHour, byDay };
+}
+
+// --- Clear stats ---
+function clearVisitorHistory() {
+  getDb().prepare('DELETE FROM visits').run();
+}
+
+function clearMotionRecordings() {
+  // Returns all file_path values before deleting so caller can remove files from disk
+  const rows = getDb().prepare('SELECT file_path FROM motion_incidents').all();
+  getDb().prepare('DELETE FROM motion_incidents').run();
+  return rows.map(r => r.file_path).filter(Boolean);
+}
+
 // --- Audit Log ---
 function addAuditLog(userId, username, action, details, ipAddress, requestId) {
   getDb().prepare(
@@ -610,6 +646,9 @@ module.exports = {
   removeBan,
   isIpBanned,
   listBans,
+  getMotionVisitStats,
+  clearVisitorHistory,
+  clearMotionRecordings,
   addAuditLog,
   getAuditLogs,
 };

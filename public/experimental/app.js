@@ -50,6 +50,10 @@
   const statMotion24h = document.getElementById('stat-motion-24h');
   const statMotion7d  = document.getElementById('stat-motion-7d');
 
+  // Visit chart
+  const visitsChartCanvas = document.getElementById('visits-chart');
+  const tlBtns = document.querySelectorAll('.tl-btn');
+
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
@@ -57,6 +61,10 @@
   let wsReconnectTimer = null;
   let hlsInstance = null;
   let vapidPublicKey = '';
+
+  // Visit chart state
+  let visitsChart = null;
+  let visitsChartRange = '24h'; // '24h' or '7d'
 
   let boxColor    = '#00ff88';
   let boxOpacity  = 0.70;
@@ -461,6 +469,9 @@
     activeVisitStart = null;
     activeVisitMaxReg = 0;
     visitSealTimer   = null;
+    // Refresh chart and clips after a visit ends (server has recorded the incident)
+    setTimeout(loadVisitsChart, 2000);
+    setTimeout(loadClips, 2000);
   }
 
   // ---------------------------------------------------------------------------
@@ -973,6 +984,95 @@
   clipsRefreshBtn.addEventListener('click', loadClips);
 
   // ---------------------------------------------------------------------------
+  // Visit activity chart
+  // ---------------------------------------------------------------------------
+  function loadVisitsChart() {
+    fetch('/api/motion-visits/stats')
+      .then(function(r) { return r.json(); })
+      .then(function(data) { renderVisitsChart(data); })
+      .catch(function() {}); // Silently fail — chart stays empty
+  }
+
+  function renderVisitsChart(data) {
+    var labels, counts;
+
+    if (visitsChartRange === '24h') {
+      // Build 24 hourly slots ending at the current hour
+      var hourSlots = [];
+      var now = new Date();
+      for (var i = 23; i >= 0; i--) {
+        var d = new Date(now);
+        d.setHours(d.getHours() - i, 0, 0, 0);
+        // Key format matches SQLite strftime('%Y-%m-%dT%H', ...)
+        var key = d.getFullYear() + '-'
+          + String(d.getMonth() + 1).padStart(2, '0') + '-'
+          + String(d.getDate()).padStart(2, '0') + 'T'
+          + String(d.getHours()).padStart(2, '0');
+        hourSlots.push({ key: key, label: String(d.getHours()).padStart(2, '0') + ':00' });
+      }
+      var byHourMap = {};
+      (data.byHour || []).forEach(function(r) { byHourMap[r.hour] = r.count; });
+      labels = hourSlots.map(function(s) { return s.label; });
+      counts = hourSlots.map(function(s) { return byHourMap[s.key] || 0; });
+    } else {
+      // Build 7 daily slots
+      var daySlots = [];
+      var now = new Date();
+      for (var i = 6; i >= 0; i--) {
+        var d = new Date(now);
+        d.setDate(d.getDate() - i);
+        var key = d.toISOString().slice(0, 10);
+        var label = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        daySlots.push({ key: key, label: label });
+      }
+      var byDayMap = {};
+      (data.byDay || []).forEach(function(r) { byDayMap[r.date] = r.count; });
+      labels = daySlots.map(function(s) { return s.label; });
+      counts = daySlots.map(function(s) { return byDayMap[s.key] || 0; });
+    }
+
+    if (visitsChart) { visitsChart.destroy(); visitsChart = null; }
+
+    if (!window.Chart) return; // Chart.js not loaded yet
+    var ctx = visitsChartCanvas.getContext('2d');
+    visitsChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Visits',
+          data: counts,
+          borderColor: 'rgb(74, 222, 128)',
+          backgroundColor: 'rgba(74, 222, 128, 0.15)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { font: { size: 10 }, maxRotation: 0 } },
+          y: { beginAtZero: true, ticks: { precision: 0 } },
+        },
+      },
+    });
+  }
+
+  // Timeline toggle buttons
+  tlBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      visitsChartRange = btn.dataset.range;
+      tlBtns.forEach(function(b) { b.classList.remove('tl-btn-active'); });
+      btn.classList.add('tl-btn-active');
+      loadVisitsChart();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------------------
   let didInit = false;
@@ -987,6 +1087,7 @@
     connectWs();
     initPush();
     loadClips();
+    loadVisitsChart();
   }
 
   // Add VAPID key endpoint to Node server — note: if not found we just skip push

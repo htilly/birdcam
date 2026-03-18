@@ -308,6 +308,11 @@ app.get('/api/motion/vapid-public-key', (req, res) => {
   res.json({ publicKey: VAPID_PUBLIC_KEY });
 });
 
+// Public: motion visit stats for the chart (24h by hour, 7d by day)
+app.get('/api/motion-visits/stats', (req, res) => {
+  res.json(db.getMotionVisitStats());
+});
+
 // Public: list recent motion clips (no auth required — visible to all visitors)
 app.get('/api/motion-clips', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
