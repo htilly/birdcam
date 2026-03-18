@@ -53,17 +53,17 @@ DB_PATH = os.environ.get('BIRDCAM_DB_PATH', '/app/data/birdcam.db')
 
 
 def get_first_camera_rtsp_from_db():
-    """Return the first configured camera rtsp_url from SQLite, or None."""
+    """Return (camera_id, rtsp_url) for the first configured camera, or (None, None)."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=2)
         cur = conn.cursor()
-        row = cur.execute('SELECT rtsp_url FROM cameras ORDER BY id LIMIT 1').fetchone()
+        row = cur.execute('SELECT id, rtsp_url FROM cameras ORDER BY id LIMIT 1').fetchone()
         conn.close()
-        if row and isinstance(row[0], str) and row[0].strip():
-            return row[0].strip()
+        if row and len(row) >= 2 and isinstance(row[0], (int,)) and isinstance(row[1], str) and row[1].strip():
+            return row[0], row[1].strip()
     except Exception as e:
         logger.warning(f"Could not read RTSP URL from DB ({DB_PATH}): {e}")
-    return None
+    return None, None
 
 # Mutable config (can be updated by clients at runtime)
 runtime_config = {
@@ -252,8 +252,10 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
     while not stop_event.is_set():
         # Resolve RTSP URL either from env or from DB (first camera).
         rtsp_url = config.RTSP_URL.strip() if isinstance(config.RTSP_URL, str) else ''
+        camera_id = None
         if not rtsp_url:
-            rtsp_url = get_first_camera_rtsp_from_db() or ''
+            camera_id, rtsp_url = get_first_camera_rtsp_from_db()
+            rtsp_url = rtsp_url or ''
             if not rtsp_url:
                 logger.error(
                     f"No RTSP URL configured in env or DB at {DB_PATH}. "
@@ -318,6 +320,7 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
                     'boxes': boxes,
                     'frame_w': fw,
                     'frame_h': fh,
+                    'camera_id': camera_id,
                     'timestamp': datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
                 }
 
