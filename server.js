@@ -70,9 +70,15 @@ if (!VAPID_PUBLIC_KEY) {
 }
 streamManager.startAll();
 
-// Start motion detector if enabled (reads frames from ffmpeg, no duplicate RTSP connection)
-if (process.env.ENABLE_MOTION_DETECTOR === 'true') {
+// Start motion detector if enabled
+// Check DB setting first, fall back to env var
+const enableMotion = db.getSetting('enable_motion_detector') === 'true' ||
+                     process.env.ENABLE_MOTION_DETECTOR === 'true';
+if (enableMotion) {
+  console.log('[motion] Motion detector enabled — starting in 3s');
   setTimeout(() => motionManager.startMotionDetector(), 3000);
+} else {
+  console.log('[motion] Motion detector disabled (set enable_motion_detector=true in DB settings to enable)');
 }
 
 const app = express();
