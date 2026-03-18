@@ -9,6 +9,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { WebSocketServer } = require('ws');
 const http = require('http');
+const { spawn } = require('child_process');
 const db = require('./db');
 const streamManager = require('./streamManager');
 const adminRoutes = require('./routes/admin');
@@ -391,6 +392,184 @@ server.on('upgrade', (request, socket, head) => {
 let _motionDetector = null; // the single motion.py detector connection
 const motionBrowserClients = new Set();
 
+// ---------------------------------------------------------------------------
+// Motion incident recordings (MP4 per "movement incident")
+// ---------------------------------------------------------------------------
+const motionClipsDir = path.join(__dirname, 'data', 'motion_clips');
+fs.mkdirSync(motionClipsDir, { recursive: true });
+
+// cameraId -> { incidentId, filePath, ffmpegProc, endTimer }
+const activeMotionIncidents = new Map();
+let motionRuntimeConfig = {
+  cooldown_sec: parseInt(process.env.MOTION_COOLDOWN_SEC, 10) || 30,
+};
+
+function formatIsoNow() {
+  return new Date().toISOString();
+}
+
+function parseIsoToMs(iso) {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : Date.now();
+}
+
+function safeNumber(n, fallback) {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : fallback;
+}
+
+function pushOpt(args, key, value) {
+  if (value === undefined || value === null) return;
+  const s = String(value);
+  if (s === '') return;
+  args.push(key);
+  args.push(s);
+}
+
+function buildMotionRecordArgs(rtspUrl, outFile, camera) {
+  const opts = streamManager.parseFfmpegOptions(camera);
+  const args = [];
+
+  pushOpt(args, '-rtsp_transport', opts.rtsp_transport || 'tcp');
+  args.push('-i', rtspUrl);
+  pushOpt(args, '-fflags', opts.fflags || 'flush_packets');
+  pushOpt(args, '-max_delay', opts.max_delay || 2);
+  pushOpt(args, '-flags', opts.flags || '-global_header');
+
+  // Video
+  if (opts.video_codec === 'copy') {
+    args.push('-c:v', 'copy');
+  } else {
+    args.push('-c:v', opts.video_codec || 'libx264');
+    args.push('-preset', opts.preset || 'ultrafast');
+    args.push('-tune', opts.tune || 'zerolatency');
+    args.push('-crf', opts.crf || 28);
+    if (opts.pix_fmt) args.push('-pix_fmt', opts.pix_fmt);
+    if (opts.g) args.push('-g', opts.g);
+    if (opts.keyint_min) args.push('-keyint_min', opts.keyint_min);
+    if (opts.force_key_frames) args.push('-force_key_frames', opts.force_key_frames);
+  }
+
+  // Audio (keep optional; default audio codec is aac)
+  if (opts.audio_codec && opts.audio_codec !== 'none') {
+    args.push('-c:a', opts.audio_codec);
+    args.push('-ac', safeNumber(opts.audio_channels, 1));
+    args.push('-ar', safeNumber(opts.audio_sample_rate, 44100));
+  } else if (opts.audio_codec === 'none') {
+    args.push('-an');
+  } else {
+    args.push('-c:a', 'aac');
+    args.push('-ac', safeNumber(opts.audio_channels, 1));
+    args.push('-ar', safeNumber(opts.audio_sample_rate, 44100));
+  }
+
+  // Output
+  args.push('-movflags', '+faststart');
+  args.push('-f', 'mp4');
+  args.push(outFile);
+
+  return args;
+}
+
+function startMotionIncident(cameraId, startedAtIso) {
+  const cam = db.getCamera(cameraId);
+  if (!cam || !cam.rtsp_url) return null;
+
+  const fileName = `motion-${cameraId}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.mp4`;
+  const filePath = path.join(motionClipsDir, fileName);
+
+  const incidentId = db.addMotionIncident(cameraId, startedAtIso, filePath);
+  const rtspUrl = cam.rtsp_url;
+  const args = buildMotionRecordArgs(rtspUrl, filePath, cam);
+
+  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+
+  proc.stderr.on('data', () => {
+    // Intentionally discard to keep logs clean.
+  });
+
+  return { incidentId, filePath, ffmpegProc: proc, endTimer: null };
+}
+
+function stopMotionIncident(cameraId, endedAtIso) {
+  const state = activeMotionIncidents.get(cameraId);
+  if (!state) return;
+  activeMotionIncidents.delete(cameraId);
+
+  if (state.endTimer) clearTimeout(state.endTimer);
+
+  const proc = state.ffmpegProc;
+  if (proc && !proc.killed) {
+    // SIGINT usually allows ffmpeg to finalize the MP4 container.
+    try { proc.kill('SIGINT'); } catch (_) {}
+    setTimeout(() => {
+      try {
+        if (proc && !proc.killed) proc.kill('SIGKILL');
+      } catch (_) {}
+    }, 5000);
+  }
+
+  // Finalize DB row and retention after process exits (or after a short grace period).
+  let finalized = false;
+  const finalize = () => {
+    if (finalized) return;
+    finalized = true;
+    let sizeBytes = 0;
+    try {
+      const st = fs.statSync(state.filePath);
+      sizeBytes = st.size || 0;
+    } catch (_) {
+      sizeBytes = 0;
+    }
+
+    db.endMotionIncident(state.incidentId, endedAtIso, sizeBytes);
+
+    if (!sizeBytes) {
+      // If no data was produced, remove the row to keep the UI clean.
+      try { fs.unlinkSync(state.filePath); } catch (_) {}
+      db.deleteMotionIncident(state.incidentId);
+    } else {
+      enforceMotionClipRetention();
+    }
+  };
+
+  if (proc) {
+    const done = () => finalize();
+    proc.once('exit', done);
+    setTimeout(done, 8000); // in case ffmpeg doesn't exit quickly
+  } else {
+    finalize();
+  }
+}
+
+function enforceMotionClipRetention() {
+  const maxCount = parseInt(db.getSetting('motion_clip_max_count'), 10) || 0;
+  const maxMb = parseInt(db.getSetting('motion_clip_max_total_mb'), 10) || 0;
+  if (maxCount <= 0 && maxMb <= 0) return;
+
+  let totals = db.getUnstarredMotionIncidentTotals();
+  let count = totals.count || 0;
+  let bytes = totals.bytes || 0;
+
+  const maxBytes = maxMb > 0 ? maxMb * 1024 * 1024 : 0;
+
+  let safety = 500; // avoid infinite loops if something goes wrong
+  while (safety-- > 0) {
+    const tooManyByCount = maxCount > 0 && count > maxCount;
+    const tooManyBySize = maxBytes > 0 && bytes > maxBytes;
+    if (!tooManyByCount && !tooManyBySize) break;
+
+    const oldest = db.getOldestUnstarredMotionIncidents(1)[0];
+    if (!oldest) break;
+
+    try { fs.unlinkSync(oldest.file_path); } catch (_) {}
+    db.deleteMotionIncident(oldest.id);
+
+    count -= 1;
+    bytes -= oldest.size_bytes || 0;
+  }
+}
+
 motionWss.on('connection', (ws, req) => {
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -435,6 +614,40 @@ motionWss.on('connection', (ws, req) => {
 
     ws.on('message', (data) => {
       const str = data.toString();
+      let msg = null;
+      try { msg = JSON.parse(str); } catch (_) {}
+
+      // Persist motion incidents + record MP4 clips
+      if (msg && msg.type) {
+        if (msg.type === 'config') {
+          if (msg.cooldown_sec !== undefined) {
+            motionRuntimeConfig.cooldown_sec = safeNumber(msg.cooldown_sec, motionRuntimeConfig.cooldown_sec);
+          }
+        } else if (msg.type === 'motion') {
+          const cameraId = Number(msg.camera_id);
+          const detected = msg.detected === true;
+          const boxesOk = Array.isArray(msg.boxes) && msg.boxes.length > 0;
+          if (Number.isFinite(cameraId) && detected && boxesOk) {
+            const startedAtIso = msg.timestamp || formatIsoNow();
+            const state = activeMotionIncidents.get(cameraId);
+            const cooldownMs = safeNumber(motionRuntimeConfig.cooldown_sec, 30) * 1000;
+
+            if (!state) {
+              const s = startMotionIncident(cameraId, startedAtIso);
+              if (s) {
+                s.endTimer = setTimeout(() => stopMotionIncident(cameraId, formatIsoNow()), cooldownMs);
+                activeMotionIncidents.set(cameraId, s);
+                db.updateMotionIncidentLastMotion(s.incidentId, startedAtIso);
+              }
+            } else {
+              db.updateMotionIncidentLastMotion(state.incidentId, startedAtIso);
+              if (state.endTimer) clearTimeout(state.endTimer);
+              state.endTimer = setTimeout(() => stopMotionIncident(cameraId, formatIsoNow()), cooldownMs);
+            }
+          }
+        }
+      }
+
       if (motionBrowserClients.size > 0) {
         motionBrowserClients.forEach(c => { if (c.readyState === 1) c.send(str); });
       }
@@ -445,6 +658,11 @@ motionWss.on('connection', (ws, req) => {
       console.log(`[motion-ws] Detector disconnected ip=${ip} code=${code} reason=${reason || 'none'}`);
       const dcMsg = JSON.stringify({ type: 'backend_disconnected' });
       motionBrowserClients.forEach(c => { if (c.readyState === 1) c.send(dcMsg); });
+
+      // Stop any active incident recorders (best-effort)
+      for (const cameraId of activeMotionIncidents.keys()) {
+        try { stopMotionIncident(cameraId, formatIsoNow()); } catch (_) {}
+      }
     });
 
     ws.on('error', (err) => {
@@ -728,6 +946,12 @@ function shutdown(signal) {
   console.log(`\n${signal} received. Shutting down gracefully...`);
   clearInterval(wsPingInterval);
   streamManager.stopAll();
+
+  // Stop any in-progress motion incident recordings (best-effort).
+  for (const cameraId of activeMotionIncidents.keys()) {
+    try { stopMotionIncident(cameraId, formatIsoNow()); } catch (_) {}
+  }
+
   wss.clients.forEach((client) => client.close());
   motionBrowserClients.forEach((client) => client.close());
   if (_motionDetector) _motionDetector.close(1000, 'shutdown');

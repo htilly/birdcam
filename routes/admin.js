@@ -235,6 +235,7 @@ function nav(active) {
   const items = [
     { id: 'cameras', label: 'Cameras', icon: '&#x1F3A5;', href: '/admin' },
     { id: 'snapshots', label: 'Snapshots', icon: '&#x1F4F7;', href: '/admin/snapshots' },
+    { id: 'motion-clips', label: 'Motion Clips', icon: '&#x1F3AC;', href: '/admin/motion-clips' },
     { id: 'visitors', label: 'Visitors', icon: '&#x1F4CA;', href: '/admin/visitors' },
     { id: 'users', label: 'Users', icon: '&#x1F465;', href: '/admin/users' },
     { id: 'chat', label: 'Chat', icon: '&#x1F4AC;', href: '/admin/chat' },
@@ -829,6 +830,74 @@ router.post('/snapshots/bulk-delete', requireLogin, verifyCsrf, auditLog('snapsh
   res.redirect('/admin/snapshots?msg=' + encodeURIComponent(`Deleted ${ids.length} snapshot${ids.length !== 1 ? 's' : ''}`));
 });
 
+// --- Motion Clips (motion incident recordings) ---
+router.get('/motion-clips', requireLogin, (req, res) => {
+  const clips = db.listRecentMotionIncidents(30);
+  const totals = db.getUnstarredMotionIncidentTotals();
+  const totalMb = totals.bytes / (1024 * 1024);
+
+  res.send(layout('Motion Clips', nav('motion-clips'), `
+    <h1>Motion Clips</h1>
+    <p class="visitors-desc" style="margin-top:0;">
+      Auto-cleanup keeps <strong>unstarred</strong> clips within the limits set in <a href="/admin/settings">Settings</a>.
+    </p>
+    <div class="visitor-stats-cards" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
+      <div class="visitor-card">
+        <span class="visitor-card-value">${escapeHtml(String(totals.count))}</span>
+        <span class="visitor-card-label">Unstarred clips (ended)</span>
+      </div>
+      <div class="visitor-card">
+        <span class="visitor-card-value">${escapeHtml(totalMb.toFixed(1))} MB</span>
+        <span class="visitor-card-label">Unstarred total size</span>
+      </div>
+      <div class="visitor-card">
+        <span class="visitor-card-value">${escapeHtml(String(clips.length))}</span>
+        <span class="visitor-card-label">Most recent shown</span>
+      </div>
+    </div>
+
+    <div style="margin-top:1rem;">
+      <div class="rec-list" style="padding:0.75rem;border:1px solid rgba(0,0,0,0.06);border-radius:var(--radius);">
+        ${clips.length ? '' : '<p class="rec-empty">No motion clips yet.</p>'}
+        ${clips.map((c) => {
+          const started = escapeHtml(c.started_at || '');
+          const ended = escapeHtml(c.ended_at || '');
+          const mb = (c.size_bytes / (1024 * 1024));
+          const mbStr = Number.isFinite(mb) ? mb.toFixed(1) : '0.0';
+          const isStarred = !!c.starred;
+          const btnText = isStarred ? '★ Starred' : '⭐ Star';
+          return `
+            <div class="rec-clip" style="border:0;padding:0.5rem 0;">
+              <div class="rec-clip-info">
+                <span class="rec-time">${started.slice(11, 19)}</span>
+                <span class="rec-dur">${ended ? ended.slice(11, 19) : '...'}</span>
+                <span class="rec-size">${mbStr} MB</span>
+                <span class="rec-size" style="margin-left:0.5rem;opacity:0.8;">${escapeHtml(c.camera_name || '')}</span>
+              </div>
+              <form method="post" action="/admin/motion-clips/${c.id}/star" style="display:inline;margin-left:0.5rem;" data-confirm="Update star?">
+                ${csrfField(req)}
+                <input type="hidden" name="starred" value="${isStarred ? 0 : 1}">
+                <button type="submit" class="btn btn-small ${isStarred ? 'btn-ghost' : 'btn-primary'}">${btnText}</button>
+              </form>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `));
+});
+
+router.post('/motion-clips/:id/star', requireLogin, verifyCsrf, auditLog('motion_clips.star'), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.redirect('/admin/motion-clips');
+  const incident = db.getMotionIncident(id);
+  if (!incident) return res.redirect('/admin/motion-clips');
+
+  const starred = String(req.body.starred) === '1';
+  db.setMotionIncidentStar(id, starred);
+  res.redirect('/admin/motion-clips');
+});
+
 // --- Settings ---
 
 router.get('/settings', requireLogin, (req, res) => {
@@ -847,6 +916,8 @@ router.get('/settings', requireLogin, (req, res) => {
   const apiRateWindow = settings.api_rate_window_min || '1';
   const snapStripStarred = settings.snap_strip_starred || '3';
   const snapStripTotal = settings.snap_strip_total || '5';
+  const motionClipMaxCount = settings.motion_clip_max_count !== undefined ? settings.motion_clip_max_count : '200';
+  const motionClipMaxTotalMb = settings.motion_clip_max_total_mb !== undefined ? settings.motion_clip_max_total_mb : '5000';
   const siteName = settings.site_name || 'Birdcam Live';
   res.send(layout('Settings', nav('settings'), `
     <h1>Settings</h1>
@@ -987,6 +1058,23 @@ router.get('/settings', requireLogin, (req, res) => {
           Default: 3 starred + up to 5 total.
         </p>
       </fieldset>
+      <fieldset class="settings-group">
+        <legend>Motion Clip Retention</legend>
+        <div class="form-row">
+          <div>
+            <label for="motion-clip-max-count">Max clips to keep (unstarred)</label>
+            <input type="number" id="motion-clip-max-count" name="motion_clip_max_count" value="${escapeHtml(motionClipMaxCount)}" min="0" max="100000">
+          </div>
+          <div>
+            <label for="motion-clip-max-total-mb">Max total size (MB, unstarred)</label>
+            <input type="number" id="motion-clip-max-total-mb" name="motion_clip_max_total_mb" value="${escapeHtml(motionClipMaxTotalMb)}" min="0" max="1000000">
+          </div>
+        </div>
+        <p class="field-hint">
+          After each motion incident, old unstarred clips are deleted until both limits are satisfied.
+          Set a value to <code>0</code> to disable that constraint.
+        </p>
+      </fieldset>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Save settings</button>
         <a href="/admin" class="btn btn-ghost">Cancel</a>
@@ -1055,6 +1143,14 @@ router.post('/settings', requireLogin, verifyCsrf, auditLog('settings.update'), 
   const snapRateWindow = Math.max(10, Math.min(3600, parseInt(req.body.snapshot_rate_window_sec) || 60));
   const snapStripStarred = Math.max(0, Math.min(20, parseInt(req.body.snap_strip_starred) || 3));
   const snapStripTotal = Math.max(1, Math.min(20, parseInt(req.body.snap_strip_total) || 5));
+  const motionClipMaxCountRaw = parseInt(req.body.motion_clip_max_count, 10);
+  const motionClipMaxTotalMbRaw = parseInt(req.body.motion_clip_max_total_mb, 10);
+  const motionClipMaxCount = Number.isFinite(motionClipMaxCountRaw)
+    ? Math.max(0, Math.min(100000, motionClipMaxCountRaw))
+    : 200;
+  const motionClipMaxTotalMb = Number.isFinite(motionClipMaxTotalMbRaw)
+    ? Math.max(0, Math.min(1000000, motionClipMaxTotalMbRaw))
+    : 5000;
   db.setSetting('login_rate_max', String(loginRateMax));
   db.setSetting('login_rate_window_min', String(loginRateWindow));
   db.setSetting('setup_rate_max', String(setupRateMax));
@@ -1069,6 +1165,8 @@ router.post('/settings', requireLogin, verifyCsrf, auditLog('settings.update'), 
   db.setSetting('api_rate_window_min', String(apiRateWindow));
   db.setSetting('snap_strip_starred', String(snapStripStarred));
   db.setSetting('snap_strip_total', String(snapStripTotal));
+  db.setSetting('motion_clip_max_count', String(motionClipMaxCount));
+  db.setSetting('motion_clip_max_total_mb', String(motionClipMaxTotalMb));
   const siteName = String(req.body.site_name || 'Birdcam Live').trim().slice(0, 60) || 'Birdcam Live';
   db.setSetting('site_name', siteName);
   res.redirect('/admin/settings?msg=Settings+saved');
