@@ -22,6 +22,10 @@ const PORT = process.env.PORT || 3000;
 const BUILD_TIME = new Date().toISOString();
 const { execSync } = require('child_process');
 
+// Motion clips directory — declared early so routes defined before line 445 can use it
+const motionClipsDir = path.join(__dirname, 'data', 'motion_clips');
+fs.mkdirSync(motionClipsDir, { recursive: true });
+
 // Get Git commit hash if available
 let GIT_COMMIT = process.env.GIT_COMMIT || null;
 
@@ -442,8 +446,6 @@ const motionBrowserClients = new Set();
 // ---------------------------------------------------------------------------
 // Motion incident recordings (MP4 per "movement incident")
 // ---------------------------------------------------------------------------
-const motionClipsDir = path.join(__dirname, 'data', 'motion_clips');
-fs.mkdirSync(motionClipsDir, { recursive: true });
 
 // cameraId -> { incidentId, filePath, ffmpegProc, endTimer }
 const activeMotionIncidents = new Map();
