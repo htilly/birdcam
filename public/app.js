@@ -418,7 +418,6 @@
 
   // --- Fullscreen button ---
   const fullscreenBtn = document.getElementById('fullscreen-btn');
-  const videoWrap = document.querySelector('.video-wrap');
   fullscreenBtn.addEventListener('click', () => {
     const el = videoWrap;
     if (el.requestFullscreen) el.requestFullscreen();
