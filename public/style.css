@@ -387,6 +387,11 @@ body {
   display: block;
 }
 
+.video-wrap.playback-mode video {
+  /* Reduce letterboxing during recorded clip playback. */
+  object-fit: cover;
+}
+
 .video-overlay {
   position: absolute;
   inset: 0;
@@ -1162,6 +1167,7 @@ body {
   background: rgba(255,255,255,0.9);
   font-size: 0.8rem;
   cursor: pointer;
+  position: relative;
   white-space: nowrap;
 }
 .rec-chip-time {
@@ -1178,6 +1184,23 @@ body {
 }
 .rec-chip-star-on {
   color: #f6c90e;
+}
+
+.rec-chip-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+.rec-chip--state-active .rec-chip-time,
+.rec-chip--state-active .rec-chip-meta,
+.rec-chip--state-active .rec-chip-star {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .recordings-controls {

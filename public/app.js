@@ -70,6 +70,7 @@
   }).catch(() => {});
 
   const video = document.getElementById('video');
+  const videoWrap = document.querySelector('.video-wrap');
   const videoOverlay = document.getElementById('video-overlay');
   const cameraTabs = document.getElementById('camera-tabs');
   const chatMessages = document.getElementById('chat-messages');
@@ -103,6 +104,9 @@
       livePill.className = 'playback-pill';
       livePill.innerHTML = '<img src="playback.png" alt=""> Playback';
     }
+    if (videoWrap) {
+      videoWrap.classList.add('playback-mode');
+    }
     if (playbackTimestamp && playbackTimestampText) {
       playbackTimestampText.textContent = timestamp;
       playbackTimestamp.classList.remove('hidden');
@@ -118,6 +122,9 @@
       clearInterval(playbackCountdownTimer);
       playbackCountdownTimer = null;
     }
+    if (videoWrap) {
+      videoWrap.classList.remove('playback-mode');
+    }
     if (livePill) {
       livePill.className = 'live-pill';
       livePill.innerHTML = 'Live';
@@ -130,10 +137,47 @@
     }
     video.onended = null;
     if (currentPlayButton) {
-      currentPlayButton.textContent = '▶ Play';
-      currentPlayButton.disabled = false;
+      restorePlayButton(currentPlayButton);
       currentPlayButton = null;
     }
+  }
+
+  function setPlayButtonState(btn, label, disabled) {
+    if (!btn) return;
+
+    const isRecChip = btn.classList && btn.classList.contains('rec-chip');
+    if (!isRecChip) {
+      btn.textContent = label;
+      btn.disabled = !!disabled;
+      return;
+    }
+
+    btn.disabled = !!disabled;
+    btn.classList.add('rec-chip--state-active');
+
+    let stateEl = btn.querySelector('.rec-chip-state');
+    if (!stateEl) {
+      stateEl = document.createElement('span');
+      stateEl.className = 'rec-chip-state';
+      btn.appendChild(stateEl);
+    }
+    stateEl.textContent = label;
+  }
+
+  function restorePlayButton(btn) {
+    if (!btn) return;
+
+    const isRecChip = btn.classList && btn.classList.contains('rec-chip');
+    if (!isRecChip) {
+      btn.textContent = '▶ Play';
+      btn.disabled = false;
+      return;
+    }
+
+    btn.disabled = false;
+    btn.classList.remove('rec-chip--state-active');
+    const stateEl = btn.querySelector('.rec-chip-state');
+    if (stateEl) stateEl.remove();
   }
 
   function handlePlaybackEnd() {
@@ -831,12 +875,10 @@
 
   function playClip(camId, startTime, endTime, btn, filename, timestamp) {
     if (currentPlayButton && currentPlayButton !== btn) {
-      currentPlayButton.textContent = '▶ Play';
-      currentPlayButton.disabled = false;
+      restorePlayButton(currentPlayButton);
     }
     currentPlayButton = btn;
-    btn.textContent = '⏳ Loading…';
-    btn.disabled = true;
+    setPlayButtonState(btn, '⏳ Loading…', true);
     if (currentPlaybackKey) {
       fetch(`/api/recordings/stream/${currentPlaybackKey}`, { method: 'DELETE' }).catch(() => {});
       currentPlaybackKey = null;
@@ -848,14 +890,12 @@
       videoOverlay.classList.add('hidden');
       video.onloadeddata = () => {
         enterPlaybackMode(displayTimestamp, camId);
-        btn.textContent = '▶ Playing';
-        btn.disabled = false;
+        setPlayButtonState(btn, '▶ Playing', false);
       };
       video.onerror = () => {
         videoOverlay.classList.remove('hidden');
         videoOverlay.querySelector('p').textContent = 'Playback error.';
-        btn.textContent = '▶ Play';
-        btn.disabled = false;
+        restorePlayButton(btn);
       };
       video.onended = handlePlaybackEnd;
       video.load();
@@ -868,7 +908,7 @@
     })
       .then((r) => r.json())
       .then((data) => {
-        if (data.error) { btn.textContent = '✗ Error'; btn.disabled = false; return; }
+        if (data.error) { setPlayButtonState(btn, '✗ Error', false); return; }
         currentPlaybackKey = data.key;
         destroyHls();
         videoOverlay.classList.add('hidden');
@@ -898,10 +938,9 @@
           enterPlaybackMode(displayTimestamp, camId);
         }
         video.onended = handlePlaybackEnd;
-        btn.textContent = '▶ Playing';
-        btn.disabled = false;
+        setPlayButtonState(btn, '▶ Playing', false);
       })
-      .catch(() => { btn.textContent = '✗ Error'; btn.disabled = false; });
+      .catch(() => { setPlayButtonState(btn, '✗ Error', false); });
   }
 
   // --- Recent recordings strip logic ---
