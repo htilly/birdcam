@@ -175,6 +175,28 @@
         <h2>Unique visitors per day (last 30 days)</h2>
         <canvas id="visitor-chart" width="800" height="280" role="img" aria-label="Line chart of unique visitors per day"></canvas>
       </div>
+
+      <div class="visitors-header" style="margin-top:2.5rem;">
+        <span class="visitors-header-icon" style="font-size:2rem;">&#x1F426;</span>
+        <h1>Bird Activity</h1>
+        <p class="visitors-desc">Detected nest visits by the motion detector</p>
+      </div>
+
+      <div class="visitor-stats-cards">
+        <div class="visitor-card">
+          <span class="visitor-card-value" id="stat-birds-today">—</span>
+          <span class="visitor-card-label">Bird visits today</span>
+        </div>
+        <div class="visitor-card">
+          <span class="visitor-card-value" id="stat-birds-week">—</span>
+          <span class="visitor-card-label">Last 7 days</span>
+        </div>
+      </div>
+
+      <div class="visitor-chart-wrap" style="margin-top:1rem;">
+        <h2>Bird visits per day (last 7 days)</h2>
+        <canvas id="bird-visit-chart" width="800" height="220" role="img" aria-label="Line chart of bird visits per day"></canvas>
+      </div>
     </main>
   </div>
 

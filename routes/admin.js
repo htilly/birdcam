@@ -1127,9 +1127,9 @@ router.get('/settings', requireLogin, (req, res) => {
       <div class="danger-zone-row">
         <div class="danger-zone-desc">
           <strong>Clear visitor history</strong>
-          <span class="field-hint" style="padding-left:0;display:block;margin-top:0.2rem;">Deletes all visitor tracking data. Stats on the Visitors page will reset to zero.</span>
+          <span class="field-hint" style="padding-left:0;display:block;margin-top:0.2rem;">Deletes all <strong>human</strong> visitor tracking data (cookie-based page visits). Stats on the Visitors page will reset to zero. Does not affect bird visit recordings.</span>
         </div>
-        <form method="post" action="/admin/reset-visitor-stats" data-confirm="This will permanently delete all visitor history. Continue?">
+        <form method="post" action="/admin/reset-visitor-stats" data-confirm="This will permanently delete all human visitor history. Continue?">
           <input type="hidden" name="_csrf" value="${getCsrfToken(req)}">
           <button type="submit" class="btn btn-danger">Clear visitor history</button>
         </form>
@@ -1137,12 +1137,12 @@ router.get('/settings', requireLogin, (req, res) => {
 
       <div class="danger-zone-row" style="margin-top:1rem;padding-top:1rem;border-top:1px solid rgba(220,38,38,0.15);">
         <div class="danger-zone-desc">
-          <strong>Clear motion recordings</strong>
-          <span class="field-hint" style="padding-left:0;display:block;margin-top:0.2rem;">Deletes all motion incidents from the database and removes all MP4 files from disk, including starred clips.</span>
+          <strong>Clear bird visit recordings</strong>
+          <span class="field-hint" style="padding-left:0;display:block;margin-top:0.2rem;">Deletes all <strong>bird visit</strong> recordings from the database and removes all MP4 files from disk, including starred clips. Also resets the birds 24h / 7d stats. Does not affect human visitor data.</span>
         </div>
-        <form method="post" action="/admin/reset-motion-stats" data-confirm="This will permanently delete all motion recordings and their video files, including starred clips. Continue?">
+        <form method="post" action="/admin/reset-motion-stats" data-confirm="This will permanently delete all bird visit recordings and their video files, including starred clips. Continue?">
           <input type="hidden" name="_csrf" value="${getCsrfToken(req)}">
-          <button type="submit" class="btn btn-danger">Clear motion recordings</button>
+          <button type="submit" class="btn btn-danger">Clear bird visit recordings</button>
         </form>
       </div>
     </fieldset>

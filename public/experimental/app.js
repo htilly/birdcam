@@ -96,123 +96,17 @@
   let activeVisitMaxReg = 0;     // max regions seen during visit
   let visitSealTimer    = null;  // setTimeout handle to seal the visit
 
-  // Rolling motion stats (persisted locally so refresh keeps history)
-  //
-  // Backend currently streams live motion frames only; we keep a lightweight,
-  // bucketed history in the browser to support "last 24h" and "last 7d".
-  const MOTION_HISTORY_KEY = 'birdcam_motion_buckets_v1_5m';
-  const WINDOW_24H_MS = 24 * 60 * 60 * 1000;
-  const WINDOW_7D_MS  = 7 * 24 * 60 * 60 * 1000;
-  const BUCKET_MS = 5 * 60 * 1000; // 5 minutes
-  const BUCKETS_7D = Math.floor(WINDOW_7D_MS / BUCKET_MS); // expected 2016
-
-  let motionBucketCounts = new Array(BUCKETS_7D).fill(0);
-  let motionBucketTimes  = new Array(BUCKETS_7D).fill(0); // bucket start epoch ms
-  let persistTimer = null;
-  let lastRollingStatsUpdateMs = 0;
-
-  function bucketKeyFromMs(tMs) {
-    return Math.floor(tMs / BUCKET_MS) * BUCKET_MS;
-  }
-
-  function getBucketIndex(bucketKeyMs) {
-    // Ring buffer index for the 7-day window.
-    return (Math.floor(bucketKeyMs / BUCKET_MS) % BUCKETS_7D + BUCKETS_7D) % BUCKETS_7D;
-  }
-
-  function persistMotionHistory() {
-    try {
-      localStorage.setItem(
-        MOTION_HISTORY_KEY,
-        JSON.stringify({ counts: motionBucketCounts, times: motionBucketTimes })
-      );
-    } catch (_) {
-      // Ignore storage/quota errors; rolling stats will still work until refresh.
+  // Update birds 24h / birds 7d stat boxes from already-fetched chart data.
+  // Called by renderVisitsChart() — no extra HTTP request needed.
+  function updateBirdStats(data) {
+    if (statMotion24h) {
+      const sum24h = (data.byHour || []).reduce((a, b) => a + b.count, 0);
+      statMotion24h.textContent = String(sum24h);
     }
-  }
-
-  function schedulePersistMotionHistory() {
-    if (persistTimer) return;
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      persistMotionHistory();
-    }, 750);
-  }
-
-  function loadMotionHistory() {
-    try {
-      const raw = localStorage.getItem(MOTION_HISTORY_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (!parsed || !Array.isArray(parsed.counts) || !Array.isArray(parsed.times)) return;
-
-      // Rehydrate arrays (keep fixed sizes).
-      const counts = parsed.counts;
-      const times = parsed.times;
-
-      motionBucketCounts = new Array(BUCKETS_7D).fill(0);
-      motionBucketTimes  = new Array(BUCKETS_7D).fill(0);
-
-      const nowMs = Date.now();
-      const cutoff7d = nowMs - WINDOW_7D_MS;
-
-      for (let i = 0; i < BUCKETS_7D; i++) {
-        const bt = Number(times[i]);
-        if (!Number.isFinite(bt) || bt < cutoff7d) continue;
-
-        const c = Number(counts[i]);
-        if (!Number.isFinite(c) || c <= 0) continue;
-
-        motionBucketTimes[i] = bt;
-        motionBucketCounts[i] = Math.floor(c);
-      }
-    } catch (_) {
-      // Start fresh on any parse/storage failure.
-      motionBucketCounts = new Array(BUCKETS_7D).fill(0);
-      motionBucketTimes  = new Array(BUCKETS_7D).fill(0);
+    if (statMotion7d) {
+      const sum7d = (data.byDay || []).reduce((a, b) => a + b.count, 0);
+      statMotion7d.textContent = String(sum7d);
     }
-  }
-
-  function recordMotionTimestamp(tMs) {
-    const bucketKey = bucketKeyFromMs(tMs);
-    const idx = getBucketIndex(bucketKey);
-
-    if (motionBucketTimes[idx] !== bucketKey) {
-      // Reuse ring slot for a new bucket key.
-      motionBucketTimes[idx] = bucketKey;
-      motionBucketCounts[idx] = 0;
-    }
-
-    motionBucketCounts[idx] += 1;
-  }
-
-  function updateRollingMotionStats(nowMs) {
-    if (!statMotion24h || !statMotion7d) return;
-    if (nowMs - lastRollingStatsUpdateMs < 1000) return; // throttle UI updates
-    lastRollingStatsUpdateMs = nowMs;
-
-    const cutoff7d = nowMs - WINDOW_7D_MS;
-    const cutoff24h = nowMs - WINDOW_24H_MS;
-
-    let sum7d = 0;
-    let sum24h = 0;
-
-    // Fixed-size scan: 7d history = 2016 buckets @ 5min.
-    for (let i = 0; i < BUCKETS_7D; i++) {
-      const bt = motionBucketTimes[i];
-      if (!bt) continue;
-
-      const c = motionBucketCounts[i] || 0;
-      if (bt >= cutoff24h) {
-        sum24h += c;
-        sum7d += c;
-      } else if (bt >= cutoff7d) {
-        sum7d += c;
-      }
-    }
-
-    statMotion24h.textContent = String(sum24h);
-    statMotion7d.textContent  = String(sum7d);
   }
 
   // Motion banner auto-hide timer
@@ -431,10 +325,6 @@
         statEvents.textContent = visitCount;
         activeVisitStart  = tDate;
         activeVisitMaxReg = boxes.length;
-
-        recordMotionTimestamp(tMs);
-        updateRollingMotionStats(Date.now());
-        schedulePersistMotionHistory();
 
         activeVisitEl = openVisitLogEntry(activeVisitStart, activeVisitMaxReg);
         showMotionBanner();
@@ -719,13 +609,6 @@
     visitCount = 0;
     statEvents.textContent = '0';
     statLast.textContent = '—';
-
-    motionBucketCounts = new Array(BUCKETS_7D).fill(0);
-    motionBucketTimes  = new Array(BUCKETS_7D).fill(0);
-    if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
-    lastRollingStatsUpdateMs = 0;
-    try { localStorage.removeItem(MOTION_HISTORY_KEY); } catch (_) {}
-    updateRollingMotionStats(Date.now());
   });
 
   // ---------------------------------------------------------------------------
@@ -994,6 +877,9 @@
   }
 
   function renderVisitsChart(data) {
+    // Update birds 24h / 7d stat boxes from the same data — no extra request.
+    updateBirdStats(data);
+
     var labels, counts;
 
     if (visitsChartRange === '24h') {
@@ -1080,9 +966,8 @@
     if (didInit) return;
     didInit = true;
     setStatus('connecting', 'Connecting…');
-    lastRollingStatsUpdateMs = 0;
-    loadMotionHistory();
-    updateRollingMotionStats(Date.now());
+    // Clean up legacy localStorage bucket data from previous version
+    try { localStorage.removeItem('birdcam_motion_buckets_v1_5m'); } catch (_) {}
     loadStream();
     connectWs();
     initPush();
