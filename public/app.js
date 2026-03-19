@@ -54,6 +54,76 @@
   let ws = null;
   let cameras = [];
   let selectedCameraId = null;
+  let isPlaybackMode = false;
+  let playbackCameraId = null;
+  let playbackCountdownTimer = null;
+
+  const livePill = document.getElementById('live-pill');
+  const playbackTimestamp = document.getElementById('playback-timestamp');
+  const playbackTimestampText = document.getElementById('playback-timestamp-text');
+  const playbackEndingOverlay = document.getElementById('playback-ending-overlay');
+  const playbackEndingText = document.getElementById('playback-ending-text');
+
+  function enterPlaybackMode(timestamp, cameraId) {
+    isPlaybackMode = true;
+    playbackCameraId = cameraId || selectedCameraId;
+    if (livePill) {
+      livePill.className = 'playback-pill';
+      livePill.innerHTML = '<img src="playback.png" alt=""> Playback';
+    }
+    if (playbackTimestamp && playbackTimestampText) {
+      playbackTimestampText.textContent = timestamp;
+      playbackTimestamp.classList.remove('hidden');
+    }
+    if (playbackEndingOverlay) {
+      playbackEndingOverlay.classList.add('hidden');
+    }
+  }
+
+  function exitPlaybackMode() {
+    isPlaybackMode = false;
+    if (playbackCountdownTimer) {
+      clearInterval(playbackCountdownTimer);
+      playbackCountdownTimer = null;
+    }
+    if (livePill) {
+      livePill.className = 'live-pill';
+      livePill.innerHTML = 'Live';
+    }
+    if (playbackTimestamp) {
+      playbackTimestamp.classList.add('hidden');
+    }
+    if (playbackEndingOverlay) {
+      playbackEndingOverlay.classList.add('hidden');
+    }
+  }
+
+  function handlePlaybackEnd() {
+    if (!isPlaybackMode) return;
+    if (playbackEndingOverlay && playbackEndingText) {
+      playbackEndingOverlay.classList.remove('hidden');
+      let countdown = 5;
+      playbackEndingText.textContent = `Returning to live in ${countdown}...`;
+      playbackCountdownTimer = setInterval(() => {
+        countdown--;
+        if (countdown <= 0) {
+          clearInterval(playbackCountdownTimer);
+          playbackCountdownTimer = null;
+          exitPlaybackMode();
+          if (playbackCameraId) {
+            selectCamera(playbackCameraId);
+          }
+        } else {
+          playbackEndingText.textContent = `Returning to live in ${countdown}...`;
+        }
+      }, 1000);
+    } else {
+      exitPlaybackMode();
+      if (playbackCameraId) {
+        selectCamera(playbackCameraId);
+      }
+    }
+  }
 
   function loadCameras() {
     fetch('/api/cameras')
@@ -92,6 +162,7 @@
   }
 
   function selectCamera(id) {
+    exitPlaybackMode();
     selectedCameraId = id;
     cameraTabs.querySelectorAll('[role="tab"]').forEach((tab) => {
       tab.setAttribute('aria-selected', tab.getAttribute('data-cam-id') === String(id) ? 'true' : 'false');
@@ -722,21 +793,30 @@
       .catch(() => { recList.innerHTML = '<p class="rec-error">Failed to fetch recordings.</p>'; });
   });
 
-  function playClip(camId, startTime, endTime, btn, filename) {
+  function playClip(camId, startTime, endTime, btn, filename, timestamp) {
     btn.textContent = '⏳ Loading…';
     btn.disabled = true;
-    // Stop previous playback session (HLS stream)
     if (currentPlaybackKey) {
       fetch(`/api/recordings/stream/${currentPlaybackKey}`, { method: 'DELETE' }).catch(() => {});
       currentPlaybackKey = null;
     }
-    // When we have the clip file on disk, play it directly (no RTSP/HLS)
+    const displayTimestamp = timestamp || (startTime ? new Date(startTime).toLocaleString() : 'Recording');
     if (filename) {
       destroyHls();
       video.src = '/clips/' + encodeURIComponent(filename);
       videoOverlay.classList.add('hidden');
-      video.onloadeddata = () => { btn.textContent = '▶ Playing'; btn.disabled = false; };
-      video.onerror = () => { videoOverlay.classList.remove('hidden'); videoOverlay.querySelector('p').textContent = 'Playback error.'; btn.textContent = '▶ Play'; btn.disabled = false; };
+      video.onloadeddata = () => {
+        enterPlaybackMode(displayTimestamp, camId);
+        btn.textContent = '▶ Playing';
+        btn.disabled = false;
+      };
+      video.onerror = () => {
+        videoOverlay.classList.remove('hidden');
+        videoOverlay.querySelector('p').textContent = 'Playback error.';
+        btn.textContent = '▶ Play';
+        btn.disabled = false;
+      };
+      video.onended = handlePlaybackEnd;
       video.load();
       return;
     }
@@ -749,7 +829,6 @@
       .then((data) => {
         if (data.error) { btn.textContent = '✗ Error'; btn.disabled = false; return; }
         currentPlaybackKey = data.key;
-        // Load the playback HLS stream into the main video player
         destroyHls();
         videoOverlay.classList.add('hidden');
         if (Hls.isSupported()) {
@@ -763,13 +842,21 @@
           });
           hls.loadSource(data.hlsUrl);
           hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, () => { videoOverlay.classList.add('hidden'); });
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            videoOverlay.classList.add('hidden');
+            enterPlaybackMode(displayTimestamp, camId);
+          });
           hls.on(Hls.Events.ERROR, (_, d) => {
-            if (d.fatal) { videoOverlay.classList.remove('hidden'); videoOverlay.querySelector('p').textContent = 'Playback error.'; }
+            if (d.fatal) {
+              videoOverlay.classList.remove('hidden');
+              videoOverlay.querySelector('p').textContent = 'Playback error.';
+            }
           });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = data.hlsUrl;
+          enterPlaybackMode(displayTimestamp, camId);
         }
+        video.onended = handlePlaybackEnd;
         btn.textContent = '▶ Playing';
         btn.disabled = false;
       })
@@ -813,7 +900,8 @@
 
       btn.addEventListener('click', () => {
         if (!c.filename) return;
-        window.open(`/clips/${encodeURIComponent(c.filename)}`, '_blank');
+        const timestamp = c.started_at ? new Date(c.started_at).toLocaleString() : 'Recording';
+        playClip(selectedCameraId, null, null, btn, c.filename, timestamp);
       });
 
       recStrip.appendChild(btn);

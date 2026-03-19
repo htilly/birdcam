@@ -18,7 +18,7 @@
         <img src="logo.png" alt="Birdcam Live" class="logo-img">
         Birdcam Live
       </h1>
-      <span class="live-pill">Live</span>
+      <span class="live-pill" id="live-pill">Live</span>
       <div class="admin-link-wrap">
         <a href="/experimental/" class="experimental-link" title="Motion detection overlay (experimental)">Experimental</a>
         <a href="/admin" class="admin-link">Admin</a>
@@ -59,6 +59,14 @@
             <p>Pick a camera above or add one in Admin.</p>
           </div>
           <button type="button" class="fullscreen-btn" id="fullscreen-btn" title="Fullscreen">⛶</button>
+          <div class="playback-timestamp hidden" id="playback-timestamp">
+            <img src="playback.png" alt="" class="playback-timestamp-icon">
+            <span id="playback-timestamp-text"></span>
+          </div>
+          <div class="playback-ending-overlay hidden" id="playback-ending-overlay">
+            <img src="logo.png" alt="Birdcam" class="playback-ending-logo">
+            <p id="playback-ending-text">Returning to live in 5...</p>
+          </div>
         </div>
         <div class="snap-rec-wrap">
           <div class="snap-row">
