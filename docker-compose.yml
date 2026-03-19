@@ -8,9 +8,6 @@ services:
       - "3000:3000"
     environment:
       - PORT=3000
-      # Run motion detector as a second process inside the same container.
-      - ENABLE_MOTION_DETECTOR=true
-      - MOTION_RELAY_URL=ws://127.0.0.1:3000/motion-ws?role=detector
       # Optional: create first admin on first run
       # - ADMIN_USER=admin
       # - ADMIN_PASSWORD=changeme

@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Visitors – Birdcam Live</title>
   <link rel="icon" type="image/png" href="favicon.png">
-  <link rel="manifest" href="/manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
@@ -175,32 +174,10 @@
         <h2>Unique visitors per day (last 30 days)</h2>
         <canvas id="visitor-chart" width="800" height="280" role="img" aria-label="Line chart of unique visitors per day"></canvas>
       </div>
-
-      <div class="visitors-header" style="margin-top:2.5rem;">
-        <span class="visitors-header-icon" style="font-size:2rem;">&#x1F426;</span>
-        <h1>Bird Activity</h1>
-        <p class="visitors-desc">Detected nest visits by the motion detector</p>
-      </div>
-
-      <div class="visitor-stats-cards">
-        <div class="visitor-card">
-          <span class="visitor-card-value" id="stat-birds-today">—</span>
-          <span class="visitor-card-label">Bird visits today</span>
-        </div>
-        <div class="visitor-card">
-          <span class="visitor-card-value" id="stat-birds-week">—</span>
-          <span class="visitor-card-label">Last 7 days</span>
-        </div>
-      </div>
-
-      <div class="visitor-chart-wrap" style="margin-top:1rem;">
-        <h2>Bird visits per day (last 7 days)</h2>
-        <canvas id="bird-visit-chart" width="800" height="220" role="img" aria-label="Line chart of bird visits per day"></canvas>
-      </div>
     </main>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" data-cfasync="false"></script>
-  <script src="visitors-app.js" data-cfasync="false"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+  <script src="visitors-app.js"></script>
 </body>
 </html>

@@ -325,24 +325,6 @@
   color: #1a365d;
   padding: 0 0.5rem;
 }
-.settings-danger-zone {
-  border-color: rgba(220, 38, 38, 0.4);
-  background: rgba(220, 38, 38, 0.02);
-}
-.settings-danger-zone legend {
-  color: #c53030;
-}
-.danger-zone-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1.5rem;
-}
-.danger-zone-desc {
-  flex: 1;
-  font-size: 0.9rem;
-  color: #2d3748;
-}
 .checkbox-label {
   display: flex;
   align-items: center;
