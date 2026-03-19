@@ -211,6 +211,17 @@ app.use(express.static(path.join(__dirname, 'public'), {
   },
 }));
 
+// Browsers request /favicon.ico by default; serve existing PNG to avoid 404
+const faviconPath = path.join(__dirname, 'public', 'favicon.png');
+app.get('/favicon.ico', (req, res) => {
+  if (fs.existsSync(faviconPath)) {
+    res.type('png');
+    res.sendFile(faviconPath);
+  } else {
+    res.status(204).end();
+  }
+});
+
 // HLS streams — optionally require auth; start stream on demand if m3u8 missing
 app.use('/hls', (req, res, next) => {
   if (db.getSetting('require_auth_streams') === 'true') {
