@@ -87,12 +87,18 @@ if (!VAPID_PUBLIC_KEY) {
     console.log('Generated and persisted VAPID keys to database.');
   }
 }
-streamManager.startAll().then(() => {
+// Motion detector reads raw frames from ffmpeg stdout for the motion camera.
+// To avoid a second ffmpeg process, start the motion camera with both HLS + raw
+// outputs from boot.
+const enableMotion = db.getSetting('enable_motion_detector') === 'true' ||
+                     process.env.ENABLE_MOTION_DETECTOR === 'true';
+const camerasForStartup = db.listCameras();
+const motionCameraId = enableMotion && camerasForStartup.length ? camerasForStartup[0].id : null;
+
+streamManager.startAll({ motionCameraId }).then(() => {
   console.log('All camera streams started.');
 
   // Start motion detector if enabled (after streams are fully up)
-  const enableMotion = db.getSetting('enable_motion_detector') === 'true' ||
-                       process.env.ENABLE_MOTION_DETECTOR === 'true';
   if (enableMotion) {
     console.log('[motion] Motion detector enabled — starting in 3s');
     setTimeout(() => motionManager.startMotionDetector(), 3000);

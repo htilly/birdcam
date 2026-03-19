@@ -267,9 +267,14 @@ async function stopAll() {
   await Promise.all([...processes.keys()].map((id) => stopStream(id)));
 }
 
-async function startAll() {
+async function startAll({ motionCameraId = null } = {}) {
   const cameras = db.listCameras();
-  for (const c of cameras) await startStream(c.id, c);
+  for (const c of cameras) {
+    // Enable the rawvideo stdout pipe only for the motion camera to avoid
+    // having two separate ffmpeg processes at steady state.
+    const enableMotionFrames = motionCameraId != null && c.id === motionCameraId;
+    await startStream(c.id, c, enableMotionFrames);
+  }
 }
 
 function isRunning(cameraId) {

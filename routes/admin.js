@@ -333,7 +333,7 @@ router.get('/login', (req, res) => {
   if (!hasUser) return res.redirect('/admin/setup');
   res.send(layout('Login', '', `
     <div class="login-box">
-      <img src="/logo.png" alt="Birdcam Live" style="display:block;margin:0 auto 1rem;height:6rem;width:auto;">
+      <img src="/admin.png" alt="Birdcam Admin" class="admin-login-icon">
       <h1>Log in to Birdcam</h1>
       ${req.query.msg ? `<div class="admin-msg">${escapeHtml(req.query.msg)}</div>` : ''}
       <form method="post" action="/admin/login" class="admin-form">

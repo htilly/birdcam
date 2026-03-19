@@ -389,6 +389,14 @@
   margin-bottom: 1.5rem;
   font-size: 1.5rem;
 }
+.admin-login-icon {
+  display: block;
+  margin: 0 auto 1.25rem;
+  height: 10rem;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+}
 .login-icon {
   text-align: center;
   font-size: 2.5rem;
