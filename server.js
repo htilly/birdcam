@@ -183,10 +183,12 @@ app.use('/api', (req, res, next) => _apiLimiterState.limiter(req, res, next));
 
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders(res, filePath) {
-    // Force revalidation of JS/CSS on every request so Cloudflare always
-    // serves the latest version after a deploy (ETag still avoids re-download).
     if (/\.(js|css)$/.test(filePath)) {
+      // Revalidate on every request — ETag avoids re-download if unchanged.
       res.setHeader('Cache-Control', 'no-cache');
+    } else if (/\.html$/.test(filePath)) {
+      // HTML must never be cached — always fresh.
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     }
   },
 }));
