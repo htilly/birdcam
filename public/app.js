@@ -122,6 +122,9 @@
       clearInterval(playbackCountdownTimer);
       playbackCountdownTimer = null;
     }
+    // Clear any stale playback-start handlers; live HLS/MP4 loads can
+    // trigger `loadeddata` and accidentally re-enter playback UI.
+    video.onloadeddata = null;
     if (videoWrap) {
       videoWrap.classList.remove('playback-mode');
     }
