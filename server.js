@@ -296,7 +296,7 @@ app.get('/api/visit', (req, res) => {
 
 app.use('/admin', adminRoutes);
 // (#19) Removed duplicate express.json() — already registered at startup with { limit: '10mb' }
-app.use('/api/recordings', recordingsRoutes);
+app.use('/api/recordings', recordingsRoutes(motionClipsDir));
 
 // --- Snapshots (static serving + GET; POST added after wss is created) ---
 // (#22) snapshotDir declared at top of file as shared constant
@@ -1048,6 +1048,7 @@ app.locals.reloadChatMessages = reloadChatMessages;
 app.locals.chatMessages = chatMessages;
 // (#22) Expose shared directory paths so admin routes use the same constants
 app.locals.snapshotDir = snapshotDir;
+app.locals.motionClipsDir = motionClipsDir;
 
 // --- Snapshot POST (after wss so we can broadcast) ---
 // (#3) Uses async writeFile to avoid blocking the event loop on large PNG writes.

@@ -136,6 +136,7 @@ body {
 
 .status-dot.connected  { background: var(--leaf); box-shadow: 0 0 0 3px rgba(74,222,128,0.25); }
 .status-dot.connecting { background: #facc15; animation: pulse-dot 1s infinite; }
+.status-dot.warming   { background: #facc15; animation: pulse-dot 1s infinite; }
 .status-dot.disconnected,
 .status-dot.offline    { background: #f87171; }
 

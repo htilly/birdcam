@@ -5,6 +5,33 @@
 
   let UI_LOCALE = { locale: undefined, hour12: undefined };
 
+  function parseDbDate(iso) {
+    if (!iso) return null;
+    if (iso.endsWith('Z') || iso.includes('T')) return new Date(iso);
+    return new Date(iso + 'Z');
+  }
+
+  function formatDateShort(d) {
+    return d.toLocaleDateString(
+      UI_LOCALE.locale ? [UI_LOCALE.locale] : [],
+      { month: 'short', day: 'numeric' }
+    );
+  }
+
+  function formatTimeShort(d) {
+    return d.toLocaleTimeString(
+      UI_LOCALE.locale ? [UI_LOCALE.locale] : [],
+      { hour: '2-digit', minute: '2-digit', hour12: UI_LOCALE.hour12 }
+    );
+  }
+
+  function formatDateTimeFull(d) {
+    return d.toLocaleString(
+      UI_LOCALE.locale ? [UI_LOCALE.locale] : [],
+      { dateStyle: 'medium', timeStyle: 'short', hour12: UI_LOCALE.hour12 }
+    );
+  }
+
   // Apply configurable site name + date/time locale
   fetch('/api/config').then(r => r.json()).then(cfg => {
     const name = cfg.siteName || 'Birdcam Live';
@@ -43,6 +70,7 @@
   }).catch(() => {});
 
   const video = document.getElementById('video');
+  const videoWrap = document.querySelector('.video-wrap');
   const videoOverlay = document.getElementById('video-overlay');
   const cameraTabs = document.getElementById('camera-tabs');
   const chatMessages = document.getElementById('chat-messages');
@@ -54,6 +82,133 @@
   let ws = null;
   let cameras = [];
   let selectedCameraId = null;
+  let isPlaybackMode = false;
+  let playbackCameraId = null;
+  let playbackCountdownTimer = null;
+  let currentPlayButton = null;
+
+  const livePill = document.getElementById('live-pill');
+  const playbackTimestamp = document.getElementById('playback-timestamp');
+  const playbackTimestampText = document.getElementById('playback-timestamp-text');
+  const playbackEndingOverlay = document.getElementById('playback-ending-overlay');
+  const playbackEndingText = document.getElementById('playback-ending-text');
+
+  const motionStatusPill = document.getElementById('motion-status-pill');
+  const motionStatusDot = document.getElementById('motion-status-dot');
+  const motionStatusText = document.getElementById('motion-status-text');
+
+  function enterPlaybackMode(timestamp, cameraId) {
+    isPlaybackMode = true;
+    playbackCameraId = cameraId || selectedCameraId;
+    if (livePill) {
+      livePill.className = 'playback-pill';
+      livePill.innerHTML = '<img src="playback.png" alt=""> Playback';
+    }
+    if (videoWrap) {
+      videoWrap.classList.add('playback-mode');
+    }
+    if (playbackTimestamp && playbackTimestampText) {
+      playbackTimestampText.textContent = timestamp;
+      playbackTimestamp.classList.remove('hidden');
+    }
+    if (playbackEndingOverlay) {
+      playbackEndingOverlay.classList.add('hidden');
+    }
+  }
+
+  function exitPlaybackMode() {
+    isPlaybackMode = false;
+    if (playbackCountdownTimer) {
+      clearInterval(playbackCountdownTimer);
+      playbackCountdownTimer = null;
+    }
+    // Clear any stale playback-start handlers; live HLS/MP4 loads can
+    // trigger `loadeddata` and accidentally re-enter playback UI.
+    video.onloadeddata = null;
+    if (videoWrap) {
+      videoWrap.classList.remove('playback-mode');
+    }
+    if (livePill) {
+      livePill.className = 'live-pill';
+      livePill.innerHTML = 'Live';
+    }
+    if (playbackTimestamp) {
+      playbackTimestamp.classList.add('hidden');
+    }
+    if (playbackEndingOverlay) {
+      playbackEndingOverlay.classList.add('hidden');
+    }
+    video.onended = null;
+    if (currentPlayButton) {
+      restorePlayButton(currentPlayButton);
+      currentPlayButton = null;
+    }
+  }
+
+  function setPlayButtonState(btn, label, disabled) {
+    if (!btn) return;
+
+    const isRecChip = btn.classList && btn.classList.contains('rec-chip');
+    if (!isRecChip) {
+      btn.textContent = label;
+      btn.disabled = !!disabled;
+      return;
+    }
+
+    btn.disabled = !!disabled;
+    btn.classList.add('rec-chip--state-active');
+
+    let stateEl = btn.querySelector('.rec-chip-state');
+    if (!stateEl) {
+      stateEl = document.createElement('span');
+      stateEl.className = 'rec-chip-state';
+      btn.appendChild(stateEl);
+    }
+    stateEl.textContent = label;
+  }
+
+  function restorePlayButton(btn) {
+    if (!btn) return;
+
+    const isRecChip = btn.classList && btn.classList.contains('rec-chip');
+    if (!isRecChip) {
+      btn.textContent = '▶ Play';
+      btn.disabled = false;
+      return;
+    }
+
+    btn.disabled = false;
+    btn.classList.remove('rec-chip--state-active');
+    const stateEl = btn.querySelector('.rec-chip-state');
+    if (stateEl) stateEl.remove();
+  }
+
+  function handlePlaybackEnd() {
+    if (!isPlaybackMode) return;
+    if (playbackEndingOverlay && playbackEndingText) {
+      playbackEndingOverlay.classList.remove('hidden');
+      let countdown = 5;
+      playbackEndingText.textContent = `Returning to live in ${countdown}...`;
+      playbackCountdownTimer = setInterval(() => {
+        countdown--;
+        if (countdown <= 0) {
+          clearInterval(playbackCountdownTimer);
+          playbackCountdownTimer = null;
+          exitPlaybackMode();
+          if (playbackCameraId) {
+            selectCamera(playbackCameraId);
+          }
+        } else {
+          playbackEndingText.textContent = `Returning to live in ${countdown}...`;
+        }
+      }, 1000);
+    } else {
+      exitPlaybackMode();
+      if (playbackCameraId) {
+        selectCamera(playbackCameraId);
+      }
+    }
+  }
 
   function loadCameras() {
     fetch('/api/cameras')
@@ -92,6 +247,7 @@
   }
 
   function selectCamera(id) {
+    exitPlaybackMode();
     selectedCameraId = id;
     cameraTabs.querySelectorAll('[role="tab"]').forEach((tab) => {
       tab.setAttribute('aria-selected', tab.getAttribute('data-cam-id') === String(id) ? 'true' : 'false');
@@ -265,7 +421,6 @@
 
   // --- Fullscreen button ---
   const fullscreenBtn = document.getElementById('fullscreen-btn');
-  const videoWrap = document.querySelector('.video-wrap');
   fullscreenBtn.addEventListener('click', () => {
     const el = videoWrap;
     if (el.requestFullscreen) el.requestFullscreen();
@@ -407,11 +562,11 @@
     }
     const cap = document.createElement('div');
     cap.className = 'snap-thumb-caption';
-    const t = new Date(s.created_at).toLocaleTimeString(
-      UI_LOCALE.locale ? [UI_LOCALE.locale] : [],
-      { hour: '2-digit', minute: '2-digit', hour12: UI_LOCALE.hour12 }
-    );
-    cap.textContent = s.nickname + ' \u00B7 ' + t;
+    const d = parseDbDate(s.created_at);
+    const dateStr = d ? formatDateShort(d) : '';
+    const timeStr = d ? formatTimeShort(d) : '';
+    cap.textContent = s.nickname + ' \u00B7 ' + dateStr;
+    cap.title = timeStr;
     thumb.appendChild(img);
     thumb.appendChild(cap);
     thumb.addEventListener('click', onClick);
@@ -441,10 +596,8 @@
   function openLightbox(s) {
     lightboxSnap = s;
     snapLightboxImg.src = s.url;
-    const t = new Date(s.created_at).toLocaleString(
-      UI_LOCALE.locale ? [UI_LOCALE.locale] : [],
-      { dateStyle: 'medium', timeStyle: 'short', hour12: UI_LOCALE.hour12 }
-    );
+    const d = parseDbDate(s.created_at);
+    const t = d ? formatDateTimeFull(d) : '';
     snapLightboxCaption.textContent = '\uD83D\uDCF7 ' + s.nickname + (s.camera_name ? ' \u00B7 ' + s.camera_name : '') + ' \u00B7 ' + t;
     if (isAdmin && s.id) {
       snapLightboxStar.textContent = s.starred ? '\u2605 Unstar' : '\u2B50 Star';
@@ -711,24 +864,44 @@
               <span class="rec-dur">${dur}</span>
               <span class="rec-size">${clip.sizeMB} MB</span>
             </div>
-            <button class="btn-play-clip" data-start="${escapeHtml(clip.startTime)}" data-end="${escapeHtml(clip.endTime)}" data-cam="${camId}">▶ Play</button>
+            <button class="btn-play-clip" data-start="${escapeHtml(clip.startTime)}" data-end="${escapeHtml(clip.endTime)}" data-cam="${camId}"${clip.filename ? ' data-filename="' + escapeHtml(clip.filename) + '"' : ''}>▶ Play</button>
           `;
           recList.appendChild(div);
         });
         recList.querySelectorAll('.btn-play-clip').forEach((btn) => {
-          btn.addEventListener('click', () => playClip(btn.dataset.cam, btn.dataset.start, btn.dataset.end, btn));
+          btn.addEventListener('click', () => playClip(btn.dataset.cam, btn.dataset.start, btn.dataset.end, btn, btn.dataset.filename));
         });
       })
       .catch(() => { recList.innerHTML = '<p class="rec-error">Failed to fetch recordings.</p>'; });
   });
 
-  function playClip(camId, startTime, endTime, btn) {
-    btn.textContent = '⏳ Loading…';
-    btn.disabled = true;
-    // Stop previous playback session
+  function playClip(camId, startTime, endTime, btn, filename, timestamp) {
+    if (currentPlayButton && currentPlayButton !== btn) {
+      restorePlayButton(currentPlayButton);
+    }
+    currentPlayButton = btn;
+    setPlayButtonState(btn, '⏳ Loading…', true);
     if (currentPlaybackKey) {
       fetch(`/api/recordings/stream/${currentPlaybackKey}`, { method: 'DELETE' }).catch(() => {});
       currentPlaybackKey = null;
+    }
+    const displayTimestamp = timestamp || (startTime ? formatDateTimeFull(parseDbDate(startTime)) : 'Recording');
+    if (filename) {
+      destroyHls();
+      video.src = '/clips/' + encodeURIComponent(filename);
+      videoOverlay.classList.add('hidden');
+      video.onloadeddata = () => {
+        enterPlaybackMode(displayTimestamp, camId);
+        setPlayButtonState(btn, '▶ Playing', false);
+      };
+      video.onerror = () => {
+        videoOverlay.classList.remove('hidden');
+        videoOverlay.querySelector('p').textContent = 'Playback error.';
+        restorePlayButton(btn);
+      };
+      video.onended = handlePlaybackEnd;
+      video.load();
+      return;
     }
     fetch(`/api/recordings/${camId}/stream`, {
       method: 'POST',
@@ -737,9 +910,8 @@
     })
       .then((r) => r.json())
       .then((data) => {
-        if (data.error) { btn.textContent = '✗ Error'; btn.disabled = false; return; }
+        if (data.error) { setPlayButtonState(btn, '✗ Error', false); return; }
         currentPlaybackKey = data.key;
-        // Load the playback HLS stream into the main video player
         destroyHls();
         videoOverlay.classList.add('hidden');
         if (Hls.isSupported()) {
@@ -753,17 +925,24 @@
           });
           hls.loadSource(data.hlsUrl);
           hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, () => { videoOverlay.classList.add('hidden'); });
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            videoOverlay.classList.add('hidden');
+            enterPlaybackMode(displayTimestamp, camId);
+          });
           hls.on(Hls.Events.ERROR, (_, d) => {
-            if (d.fatal) { videoOverlay.classList.remove('hidden'); videoOverlay.querySelector('p').textContent = 'Playback error.'; }
+            if (d.fatal) {
+              videoOverlay.classList.remove('hidden');
+              videoOverlay.querySelector('p').textContent = 'Playback error.';
+            }
           });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = data.hlsUrl;
+          enterPlaybackMode(displayTimestamp, camId);
         }
-        btn.textContent = '▶ Playing';
-        btn.disabled = false;
+        video.onended = handlePlaybackEnd;
+        setPlayButtonState(btn, '▶ Playing', false);
       })
-      .catch(() => { btn.textContent = '✗ Error'; btn.disabled = false; });
+      .catch(() => { setPlayButtonState(btn, '✗ Error', false); });
   }
 
   // --- Recent recordings strip logic ---
@@ -775,15 +954,17 @@
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'rec-chip';
-      const start = c.started_at ? new Date(c.started_at) : null;
-      const end = c.ended_at ? new Date(c.ended_at) : null;
+      const start = parseDbDate(c.started_at);
+      const end = parseDbDate(c.ended_at);
       const durSec = start && end ? Math.round((end - start) / 1000) : null;
-      const timeStr = start ? c.started_at.slice(11, 16) : '—';
+      const dateStr = start ? formatDateShort(start) : '—';
+      const timeStr = start ? formatTimeShort(start) : '';
       const durStr = durSec != null ? `${durSec}s` : '';
 
       const timeEl = document.createElement('span');
       timeEl.className = 'rec-chip-time';
-      timeEl.textContent = timeStr;
+      timeEl.textContent = dateStr;
+      if (timeStr) timeEl.title = timeStr;
 
       const metaEl = document.createElement('span');
       metaEl.className = 'rec-chip-meta';
@@ -803,7 +984,8 @@
 
       btn.addEventListener('click', () => {
         if (!c.filename) return;
-        window.open(`/clips/${encodeURIComponent(c.filename)}`, '_blank');
+        const timestamp = start ? formatDateTimeFull(start) : 'Recording';
+        playClip(selectedCameraId, null, null, btn, c.filename, timestamp);
       });
 
       recStrip.appendChild(btn);
@@ -835,4 +1017,45 @@
       })
       .catch(() => {});
   }
+
+  // ---------------------------------------------------------------------------
+  // Motion status indicator
+  // ---------------------------------------------------------------------------
+  function setMotionStatus(state, text) {
+    if (motionStatusText) motionStatusText.textContent = text;
+    if (motionStatusDot) motionStatusDot.className = 'motion-status-dot ' + state;
+    if (motionStatusPill) motionStatusPill.className = 'motion-status-pill ' + state;
+  }
+
+  let motionWs = null;
+  function connectMotionWs() {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    motionWs = new WebSocket(protocol + '//' + location.host + '/motion-ws');
+    motionWs.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'status') {
+          if (msg.warming_up) {
+            setMotionStatus('warming', 'Motion: ' + (msg.message || 'Warming up...'));
+          } else if (msg.connected === false) {
+            setMotionStatus('disconnected', 'Motion: ' + (msg.message || 'Offline'));
+          } else {
+            setMotionStatus('connected', 'Motion: ' + (msg.message || 'Active'));
+          }
+        } else if (msg.type === 'backend_connected') {
+          setMotionStatus('connected', 'Motion: Online');
+        } else if (msg.type === 'backend_disconnected') {
+          setMotionStatus('offline', 'Motion: Detector offline');
+        }
+      } catch (_) {}
+    };
+    motionWs.onclose = () => {
+      setMotionStatus('offline', 'Motion: Disconnected');
+      setTimeout(connectMotionWs, 5000);
+    };
+    motionWs.onerror = () => {
+      setMotionStatus('offline', 'Motion: Error');
+    };
+  }
+  connectMotionWs();
 })();

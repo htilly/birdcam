@@ -42,6 +42,15 @@
     try { msg = JSON.parse(ev.data); } catch (_) {}
     if (!msg) return;
 
+    if (msg.type === 'status') {
+      if (msg.warming_up) {
+        if (statusEl) statusEl.textContent = msg.message || 'Warming up...';
+      } else if (msg.connected === false) {
+        if (statusEl) statusEl.textContent = msg.message || 'Offline';
+      } else {
+        if (statusEl) statusEl.textContent = msg.message || 'Active';
+      }
+    }
     if (msg.type === 'config') {
       if (msg.cooldown_sec !== undefined && cooldownEl) {
         cooldownEl.value = Number(msg.cooldown_sec);

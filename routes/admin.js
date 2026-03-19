@@ -875,58 +875,90 @@ router.post('/snapshots/bulk-delete', requireLogin, verifyCsrf, auditLog('snapsh
 
 // --- Motion Clips (motion incident recordings) ---
 router.get('/motion-clips', requireLogin, (req, res) => {
-  const clips = db.listRecentMotionIncidents(30);
+  const clips = db.listRecentMotionIncidents(200);
   const totals = db.getUnstarredMotionIncidentTotals();
   const totalMb = totals.bytes / (1024 * 1024);
+  const csrfToken = csrfField(req);
+
+  let content;
+  if (clips.length) {
+    const cards = clips.map((c) => {
+      const isStarred = !!c.starred;
+      const starLabel = isStarred ? 'Unstar' : 'Star';
+      const starIcon = isStarred ? '&#x2B50;' : '&#x2606;';
+      const started = c.started_at || '';
+      const ended = c.ended_at || '';
+      const mb = (c.size_bytes / (1024 * 1024));
+      const mbStr = Number.isFinite(mb) ? mb.toFixed(1) : '0.0';
+      const fileName = c.file_path ? path.basename(c.file_path) : '';
+      return `
+        <div class="snap-admin-card ${isStarred ? 'starred' : ''}" data-id="${c.id}">
+          <label class="snap-admin-check-wrap" title="Select">
+            <input type="checkbox" class="snap-admin-check" name="ids[]" value="${c.id}">
+          </label>
+          <div class="snap-admin-thumb-link snap-admin-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--bg-alt);font-size:2rem;">
+            &#x1F3AC;
+            ${isStarred ? '<span class="snap-admin-starred-badge">&#x2B50; Starred</span>' : ''}
+          </div>
+          <div class="snap-admin-meta">
+            <div class="snap-admin-nick">${started ? started.slice(0, 10) : '—'}</div>
+            <div class="snap-admin-cam">${escapeHtml(c.camera_name || '—')}</div>
+            <div class="snap-admin-time">${started ? started.slice(11, 19) : '—'} → ${ended ? ended.slice(11, 19) : '...'} (${mbStr} MB)</div>
+          </div>
+          <div class="snap-admin-actions">
+            <form method="post" action="/admin/motion-clips/${c.id}/star" style="display:inline">
+              ${csrfToken}
+              <input type="hidden" name="starred" value="${isStarred ? '0' : '1'}">
+              <button type="submit" class="btn btn-small ${isStarred ? 'btn-ghost' : ''}" title="${starLabel}">${starIcon} ${starLabel}</button>
+            </form>
+            <form method="post" action="/admin/motion-clips/${c.id}/delete" style="display:inline" data-confirm="Delete this clip?">
+              ${csrfToken}
+              <button type="submit" class="btn btn-small btn-danger">Delete</button>
+            </form>
+          </div>
+        </div>`;
+    }).join('');
+    content = `
+      ${req.query.msg ? `<div class="admin-msg admin-msg-ok">${escapeHtml(req.query.msg)}</div>` : ''}
+      <div class="visitor-stats-cards" style="grid-template-columns: repeat(3, minmax(0, 1fr));margin-bottom:1rem;">
+        <div class="visitor-card">
+          <span class="visitor-card-value">${escapeHtml(String(totals.count))}</span>
+          <span class="visitor-card-label">Unstarred clips</span>
+        </div>
+        <div class="visitor-card">
+          <span class="visitor-card-value">${escapeHtml(totalMb.toFixed(1))} MB</span>
+          <span class="visitor-card-label">Unstarred total size</span>
+        </div>
+        <div class="visitor-card">
+          <span class="visitor-card-value">${escapeHtml(String(clips.length))}</span>
+          <span class="visitor-card-label">Total clips</span>
+        </div>
+      </div>
+      <form method="post" action="/admin/motion-clips/bulk-delete" id="bulk-form">
+        ${csrfToken}
+        <div class="snap-bulk-bar">
+          <label class="snap-bulk-select-all">
+            <input type="checkbox" id="snap-select-all"> Select all
+          </label>
+          <button type="submit" class="btn btn-danger" id="bulk-delete-btn" disabled>&#x1F5D1; Delete selected (<span id="bulk-count">0</span>)</button>
+        </div>
+        <div class="snap-admin-grid">${cards}</div>
+      </form>`;
+  } else {
+    content = `
+      <div class="empty-state">
+        <div class="empty-state-icon">&#x1F3AC;</div>
+        <p class="empty-state-text">No motion clips yet. Clips are recorded when motion is detected.</p>
+      </div>`;
+  }
 
   res.send(layout('Motion Clips', nav('motion-clips'), `
-    <h1>Motion Clips</h1>
-    <p class="visitors-desc" style="margin-top:0;">
-      Auto-cleanup keeps <strong>unstarred</strong> clips within the limits set in <a href="/admin/settings">Settings</a>.
-    </p>
-    <div class="visitor-stats-cards" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
-      <div class="visitor-card">
-        <span class="visitor-card-value">${escapeHtml(String(totals.count))}</span>
-        <span class="visitor-card-label">Unstarred clips (ended)</span>
-      </div>
-      <div class="visitor-card">
-        <span class="visitor-card-value">${escapeHtml(totalMb.toFixed(1))} MB</span>
-        <span class="visitor-card-label">Unstarred total size</span>
-      </div>
-      <div class="visitor-card">
-        <span class="visitor-card-value">${escapeHtml(String(clips.length))}</span>
-        <span class="visitor-card-label">Most recent shown</span>
-      </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
+      <h1 style="margin:0">Motion Clips</h1>
     </div>
-
-    <div style="margin-top:1rem;">
-      <div class="rec-list" style="padding:0.75rem;border:1px solid rgba(0,0,0,0.06);border-radius:var(--radius);">
-        ${clips.length ? '' : '<p class="rec-empty">No motion clips yet.</p>'}
-        ${clips.map((c) => {
-          const started = escapeHtml(c.started_at || '');
-          const ended = escapeHtml(c.ended_at || '');
-          const mb = (c.size_bytes / (1024 * 1024));
-          const mbStr = Number.isFinite(mb) ? mb.toFixed(1) : '0.0';
-          const isStarred = !!c.starred;
-          const btnText = isStarred ? '★ Starred' : '⭐ Star';
-          return `
-            <div class="rec-clip" style="border:0;padding:0.5rem 0;">
-              <div class="rec-clip-info">
-                <span class="rec-time">${started.slice(11, 19)}</span>
-                <span class="rec-dur">${ended ? ended.slice(11, 19) : '...'}</span>
-                <span class="rec-size">${mbStr} MB</span>
-                <span class="rec-size" style="margin-left:0.5rem;opacity:0.8;">${escapeHtml(c.camera_name || '')}</span>
-              </div>
-              <form method="post" action="/admin/motion-clips/${c.id}/star" style="display:inline;margin-left:0.5rem;" data-confirm="Update star?">
-                ${csrfField(req)}
-                <input type="hidden" name="starred" value="${isStarred ? 0 : 1}">
-                <button type="submit" class="btn btn-small ${isStarred ? 'btn-ghost' : 'btn-primary'}">${btnText}</button>
-              </form>
-            </div>
-          `;
-        }).join('')}
-      </div>
-    </div>
+    <p class="visitors-desc">Auto-cleanup keeps <strong>unstarred</strong> clips within the limits set in <a href="/admin/settings">Settings</a>. Star a clip to prevent auto-deletion.</p>
+    ${content}
+    <script src="/admin/motion-clips-admin.js"></script>
   `));
 });
 
@@ -938,7 +970,41 @@ router.post('/motion-clips/:id/star', requireLogin, verifyCsrf, auditLog('motion
 
   const starred = String(req.body.starred) === '1';
   db.setMotionIncidentStar(id, starred);
-  res.redirect('/admin/motion-clips');
+  res.redirect('/admin/motion-clips?msg=' + (starred ? 'Clip+starred' : 'Clip+unstarred'));
+});
+
+router.post('/motion-clips/:id/delete', requireLogin, verifyCsrf, auditLog('motion_clips.delete'), (req, res) => {
+  const id = Number(req.params.id);
+  const incident = db.getMotionIncident(id);
+  if (incident) {
+    const clipsDir = req.app.locals.motionClipsDir || path.join(__dirname, '..', 'data', 'motion_clips');
+    if (incident.file_path) {
+      const base = path.basename(incident.file_path);
+      if (base === incident.file_path || !base.includes('..')) {
+        try { fs.unlinkSync(path.join(clipsDir, base)); } catch (_) {}
+      }
+    }
+    db.deleteMotionIncident(id);
+  }
+  res.redirect('/admin/motion-clips?msg=Clip+deleted');
+});
+
+router.post('/motion-clips/bulk-delete', requireLogin, verifyCsrf, auditLog('motion_clips.bulk-delete'), (req, res) => {
+  let ids = req.body.ids || req.body['ids[]'] || [];
+  if (!Array.isArray(ids)) ids = [ids];
+  ids = ids.map(Number).filter(n => n > 0);
+  const clipsDir = req.app.locals.motionClipsDir || path.join(__dirname, '..', 'data', 'motion_clips');
+  for (const id of ids) {
+    const incident = db.getMotionIncident(id);
+    if (incident && incident.file_path) {
+      const base = path.basename(incident.file_path);
+      if (base === incident.file_path || !base.includes('..')) {
+        try { fs.unlinkSync(path.join(clipsDir, base)); } catch (_) {}
+      }
+    }
+  }
+  db.deleteMotionIncidents(ids);
+  res.redirect('/admin/motion-clips?msg=' + encodeURIComponent(`Deleted ${ids.length} clip${ids.length !== 1 ? 's' : ''}`));
 });
 
 // --- Settings ---

@@ -261,7 +261,9 @@
         break;
 
       case 'status':
-        if (msg.connected === false) {
+        if (msg.warming_up) {
+          setStatus('warming', msg.message || 'Warming up...');
+        } else if (msg.connected === false) {
           setStatus('disconnected', msg.message || 'Camera offline');
         } else {
           setStatus('connected', msg.message || 'Camera connected');

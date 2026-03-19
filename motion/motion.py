@@ -269,15 +269,24 @@ async def run_motion_loop_stdin(
     """
     global last_notification_time
     bg_subtractor = build_detector()
-    warmup_frames = 30
+    warmup_frames = config.WARMUP_FRAMES
+    warmup_update_interval = max(10, warmup_frames // 10)
+    last_warmup_update = 0
 
     frame_width = int(os.environ.get("MOTION_FRAME_WIDTH", "640"))
     frame_height = int(os.environ.get("MOTION_FRAME_HEIGHT", "360"))
     frame_size = frame_width * frame_height * 3  # BGR24 = 3 bytes per pixel
 
     logger.info(f"Reading frames from stdin: {frame_width}x{frame_height} BGR24")
+    logger.info(f"Warming up background model ({warmup_frames} frames)...")
     await send_to_relay(
-        {"type": "status", "connected": True, "message": "Reading frames from stream."}
+        {
+            "type": "status",
+            "connected": True,
+            "message": f"Warming up... 0/{warmup_frames} frames",
+            "warming_up": True,
+            "warmup_progress": {"current": 0, "total": warmup_frames},
+        }
     )
 
     frame_count = 0
@@ -320,8 +329,33 @@ async def run_motion_loop_stdin(
                 _, _, _, _ = await asyncio.to_thread(
                     process_frame, frame, bg_subtractor
                 )
+                if (
+                    frame_count - last_warmup_update >= warmup_update_interval
+                    or frame_count == warmup_frames
+                ):
+                    last_warmup_update = frame_count
+                    await send_to_relay(
+                        {
+                            "type": "status",
+                            "connected": True,
+                            "message": f"Warming up... {frame_count}/{warmup_frames} frames",
+                            "warming_up": True,
+                            "warmup_progress": {
+                                "current": frame_count,
+                                "total": warmup_frames,
+                            },
+                        }
+                    )
                 if frame_count == warmup_frames:
                     logger.info("Background model warmed up. Detection active.")
+                    await send_to_relay(
+                        {
+                            "type": "status",
+                            "connected": True,
+                            "message": "Detection active",
+                            "warming_up": False,
+                        }
+                    )
                 await asyncio.sleep(0)
                 continue
 
@@ -382,7 +416,9 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
     """
     global last_notification_time
     bg_subtractor = build_detector()
-    warmup_frames = 30  # Let background model stabilise before detecting
+    warmup_frames = config.WARMUP_FRAMES
+    warmup_update_interval = max(10, warmup_frames // 10)
+    last_warmup_update = 0
 
     while not stop_event.is_set():
         # Resolve RTSP URL either from env or from DB (first camera).
@@ -431,12 +467,20 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
             )
             await asyncio.sleep(config.RECONNECT_DELAY_SEC)
             bg_subtractor = build_detector()
-            warmup_frames = 30
+            warmup_frames = config.WARMUP_FRAMES
+            last_warmup_update = 0
             continue
 
         logger.info("RTSP stream opened.")
+        logger.info(f"Warming up background model ({warmup_frames} frames)...")
         await send_to_relay(
-            {"type": "status", "connected": True, "message": "Camera connected."}
+            {
+                "type": "status",
+                "connected": True,
+                "message": f"Warming up... 0/{warmup_frames} frames",
+                "warming_up": True,
+                "warmup_progress": {"current": 0, "total": warmup_frames},
+            }
         )
 
         frame_count = 0
@@ -462,8 +506,33 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
                     _, _, _, _ = await asyncio.to_thread(
                         process_frame, frame, bg_subtractor
                     )
+                    if (
+                        frame_count - last_warmup_update >= warmup_update_interval
+                        or frame_count == warmup_frames
+                    ):
+                        last_warmup_update = frame_count
+                        await send_to_relay(
+                            {
+                                "type": "status",
+                                "connected": True,
+                                "message": f"Warming up... {frame_count}/{warmup_frames} frames",
+                                "warming_up": True,
+                                "warmup_progress": {
+                                    "current": frame_count,
+                                    "total": warmup_frames,
+                                },
+                            }
+                        )
                     if frame_count == warmup_frames:
                         logger.info("Background model warmed up. Detection active.")
+                        await send_to_relay(
+                            {
+                                "type": "status",
+                                "connected": True,
+                                "message": "Detection active",
+                                "warming_up": False,
+                            }
+                        )
                     await asyncio.sleep(0)  # Yield to event loop
                     continue
 
