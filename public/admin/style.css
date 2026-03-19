@@ -45,6 +45,7 @@
   padding: 1.75rem;
   border-radius: 12px;
   box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  line-height: 1.5;
 }
 
 .admin-main h1 {
@@ -221,8 +222,8 @@
   display: block;
   margin-bottom: 0.2rem;
   font-weight: 600;
-  font-size: 0.85rem;
-  color: #4a5568;
+  font-size: 0.9rem;
+  color: #2d3748;
 }
 .admin-form input[type="text"],
 .admin-form input[type="password"],
@@ -300,9 +301,9 @@
 
 /* --- Hints --- */
 .field-hint {
-  margin: -0.5rem 0 0.9rem;
-  font-size: 0.8rem;
-  color: #a0aec0;
+  margin: 0.15rem 0 0.9rem;
+  font-size: 0.85rem;
+  color: #718096;
   line-height: 1.4;
 }
 .field-hint code {
@@ -316,8 +317,8 @@
 .settings-group {
   border: 2px solid #e2e8f0;
   border-radius: 10px;
-  padding: 1.25rem;
-  margin-bottom: 1rem;
+  padding: 1.5rem;
+  margin-bottom: 1.25rem;
 }
 .settings-group legend {
   font-weight: 700;
@@ -359,7 +360,7 @@
   flex-shrink: 0;
 }
 .checkbox-label + .field-hint {
-  padding-left: calc(20px + 0.6rem);
+  padding-left: 0;
 }
 
 /* --- Empty state --- */

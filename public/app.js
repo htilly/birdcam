@@ -576,13 +576,27 @@
     const yesterday = new Date(now);
     yesterday.setDate(yesterday.getDate() - 1);
     const wasYesterday = then.toDateString() === yesterday.toDateString();
+
+    const locale = UI_LOCALE.locale || undefined;
+    const hour12 = UI_LOCALE.hour12;
+
     const timeStr = then.toLocaleTimeString(
-      UI_LOCALE.locale ? [UI_LOCALE.locale] : [],
-      { hour: '2-digit', minute: '2-digit', hour12: UI_LOCALE.hour12 }
+      locale ? [locale] : [],
+      { hour: '2-digit', minute: '2-digit', hour12 }
     );
+
     if (sameDay) return 'Your last visit: Today at ' + timeStr;
     if (wasYesterday) return 'Your last visit: Yesterday at ' + timeStr;
-    return 'Your last visit: ' + then.toLocaleDateString() + ' at ' + timeStr;
+
+    // EU: YYYY-MM-DD  HH:MM, US: locale medium date + time
+    if (locale === 'sv-SE') {
+      const y = then.getFullYear();
+      const m = String(then.getMonth() + 1).padStart(2, '0');
+      const d = String(then.getDate()).padStart(2, '0');
+      return 'Your last visit: ' + `${y}-${m}-${d}` + ' ' + timeStr;
+    }
+
+    return 'Your last visit: ' + then.toLocaleDateString(locale || undefined) + ' at ' + timeStr;
   }
 
   function updateLastVisit() {

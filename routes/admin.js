@@ -978,12 +978,14 @@ router.get('/settings', requireLogin, (req, res) => {
         <div>
           <label for="datetime-locale">Display format</label>
           <select id="datetime-locale" name="datetime_locale">
-            <option value="eu" ${datetimeLocale === 'eu' ? 'selected' : ''}>EU – 24-hour, day-month-year</option>
-            <option value="us" ${datetimeLocale === 'us' ? 'selected' : ''}>US – 12-hour, month-day-year</option>
+            <option value="eu" ${datetimeLocale === 'eu' ? 'selected' : ''}>EU – 24-hour, YYYY-MM-DD (e.g. 2026-09-23)</option>
+            <option value="us" ${datetimeLocale === 'us' ? 'selected' : ''}>US – 12-hour, local date (e.g. Sep 23, 2026)</option>
           </select>
         </div>
         <p class="field-hint">
-          Controls how dates and times are shown in the admin UI (user list, audit log, chat moderation, etc.).
+          Controls how dates and times are shown in the admin UI and parts of the public UI.
+          EU: dates like <code>2026-09-23</code> and 24-hour clocks (e.g. <code>14:37</code>).
+          US: localized dates like <code>Sep 23, 2026</code> and 12-hour clocks (e.g. <code>2:37 PM</code>).
         </p>
       </fieldset>
       <fieldset class="settings-group">
