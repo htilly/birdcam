@@ -6,21 +6,16 @@ const { createMockRequest, createMockResponse } = require('../../helpers/app');
 const originalDb = require('../../db');
 const { auditLog } = require('../../middleware/audit');
 
-let restoreDb = null;
-
 function setupTestDb() {
   const testDb = createTestDb();
-  restoreDb = originalDb.getDb;
-  originalDb.getDb = () => testDb;
-  originalDb._stmtCache = {};
+  originalDb._setTestDb(testDb);
+  for (const key in originalDb._stmtCache) delete originalDb._stmtCache[key];
   return testDb;
 }
 
 function teardownTestDb() {
-  if (restoreDb) {
-    originalDb.getDb = restoreDb;
-    restoreDb = null;
-  }
+  originalDb._resetTestDb();
+  for (const key in originalDb._stmtCache) delete originalDb._stmtCache[key];
   closeTestDb();
 }
 

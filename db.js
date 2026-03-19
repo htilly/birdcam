@@ -11,6 +11,7 @@ let db;
 // better-sqlite3 does internal caching by SQL string, but this eliminates
 // the lookup overhead and object allocation on hot paths.
 const _stmtCache = {};
+let _testDb = null;
 function stmt(key, sql) {
   if (!_stmtCache[key]) _stmtCache[key] = getDb().prepare(sql);
   return _stmtCache[key];
@@ -23,6 +24,7 @@ let _reverseProxyCacheTime = 0;
 const REVERSE_PROXY_CACHE_TTL = 30_000; // 30 seconds
 
 function getDb() {
+  if (_testDb) return _testDb;
   if (!db) {
     fs.mkdirSync(dataDir, { recursive: true });
     db = new Database(dbPath);
@@ -708,6 +710,9 @@ function getAuditLogs(limit = 100) {
 
 module.exports = {
   getDb,
+  _stmtCache,
+  _setTestDb: (db) => { _testDb = db; },
+  _resetTestDb: () => { _testDb = null; },
   init,
   migrate,
   buildRtspUrl,

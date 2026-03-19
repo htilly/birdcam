@@ -20,23 +20,18 @@ function verifyCsrf(req, res, next) {
   next();
 }
 
-let restoreDb = null;
-
 function setupTestDb() {
   const testDb = createTestDb();
   const originalDb = require('../../db');
-  restoreDb = originalDb.getDb;
-  originalDb.getDb = () => testDb;
-  originalDb._stmtCache = {};
+  originalDb._setTestDb(testDb);
+  for (const key in originalDb._stmtCache) delete originalDb._stmtCache[key];
   return testDb;
 }
 
 function teardownTestDb() {
-  if (restoreDb) {
-    const originalDb = require('../../db');
-    originalDb.getDb = restoreDb;
-    restoreDb = null;
-  }
+  const originalDb = require('../../db');
+  originalDb._resetTestDb();
+  for (const key in originalDb._stmtCache) delete originalDb._stmtCache[key];
   closeTestDb();
 }
 
