@@ -2,10 +2,12 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
-const router = express.Router();
 const db = require('../db');
 const { requireLogin } = require('../middleware/auth');
 const hlsBaseDir = path.join(__dirname, '..', 'hls');
+
+function createRecordingsRouter(motionClipsDir) {
+  const router = express.Router();
 
 // Active playback sessions: key -> {process, hlsDir, lastAccess, createdAt}
 const playbackSessions = new Map();
@@ -54,12 +56,17 @@ router.get('/:cameraId', (req, res) => {
       if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return null;
       const durationSec = Math.round((end - start) / 1000);
       const sizeMB = row.size_bytes != null ? +(row.size_bytes / (1024 * 1024)).toFixed(1) : 0;
-      return {
+      const clip = {
         startTime: row.started_at,
         endTime: row.ended_at,
         durationSec,
         sizeMB,
       };
+      const filename = path.basename(row.file_path || '');
+      if (filename.endsWith('.mp4') && motionClipsDir && fs.existsSync(path.join(motionClipsDir, filename))) {
+        clip.filename = filename;
+      }
+      return clip;
     })
     .filter(Boolean);
 
@@ -136,4 +143,7 @@ router.delete('/stream/:key', requireLogin, (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = router;
+  return router;
+}
+
+module.exports = createRecordingsRouter;

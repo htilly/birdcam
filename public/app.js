@@ -711,24 +711,34 @@
               <span class="rec-dur">${dur}</span>
               <span class="rec-size">${clip.sizeMB} MB</span>
             </div>
-            <button class="btn-play-clip" data-start="${escapeHtml(clip.startTime)}" data-end="${escapeHtml(clip.endTime)}" data-cam="${camId}">▶ Play</button>
+            <button class="btn-play-clip" data-start="${escapeHtml(clip.startTime)}" data-end="${escapeHtml(clip.endTime)}" data-cam="${camId}"${clip.filename ? ' data-filename="' + escapeHtml(clip.filename) + '"' : ''}>▶ Play</button>
           `;
           recList.appendChild(div);
         });
         recList.querySelectorAll('.btn-play-clip').forEach((btn) => {
-          btn.addEventListener('click', () => playClip(btn.dataset.cam, btn.dataset.start, btn.dataset.end, btn));
+          btn.addEventListener('click', () => playClip(btn.dataset.cam, btn.dataset.start, btn.dataset.end, btn, btn.dataset.filename));
         });
       })
       .catch(() => { recList.innerHTML = '<p class="rec-error">Failed to fetch recordings.</p>'; });
   });
 
-  function playClip(camId, startTime, endTime, btn) {
+  function playClip(camId, startTime, endTime, btn, filename) {
     btn.textContent = '⏳ Loading…';
     btn.disabled = true;
-    // Stop previous playback session
+    // Stop previous playback session (HLS stream)
     if (currentPlaybackKey) {
       fetch(`/api/recordings/stream/${currentPlaybackKey}`, { method: 'DELETE' }).catch(() => {});
       currentPlaybackKey = null;
+    }
+    // When we have the clip file on disk, play it directly (no RTSP/HLS)
+    if (filename) {
+      destroyHls();
+      video.src = '/clips/' + encodeURIComponent(filename);
+      videoOverlay.classList.add('hidden');
+      video.onloadeddata = () => { btn.textContent = '▶ Playing'; btn.disabled = false; };
+      video.onerror = () => { videoOverlay.classList.remove('hidden'); videoOverlay.querySelector('p').textContent = 'Playback error.'; btn.textContent = '▶ Play'; btn.disabled = false; };
+      video.load();
+      return;
     }
     fetch(`/api/recordings/${camId}/stream`, {
       method: 'POST',
