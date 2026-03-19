@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - dev
   workflow_dispatch:
     inputs:
       tag:
@@ -71,6 +72,8 @@ jobs:
             else
               echo "tags=${IMAGE}:${TAG},${IMAGE}:${TAG}-${SHORT_SHA}" >> $GITHUB_OUTPUT
             fi
+          elif [ "${{ github.ref_name }}" = "dev" ]; then
+            echo "tags=${IMAGE}:dev,${IMAGE}:dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
           else
             # Push to main
             echo "tags=${IMAGE}:latest,${IMAGE}:main,${IMAGE}:main-${SHORT_SHA}" >> $GITHUB_OUTPUT
