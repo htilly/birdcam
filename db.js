@@ -222,6 +222,9 @@ function migrate() {
 const DEFAULT_SETTINGS = {
   reverse_proxy: 'false',
   require_auth_streams: 'false',
+  // Date/time display preferences (admin + public UI)
+  // "eu" = 24h, day-month-year; "us" = 12h, month-day-year
+  datetime_locale: 'eu',
   login_rate_window_min: '15',
   login_rate_max: '15',
   setup_rate_window_min: '15',
@@ -584,6 +587,32 @@ function getMotionVisitStats() {
   return { byHour, byDay };
 }
 
+// Recent ended visits for the event log (server-side list)
+function listRecentVisits(limit = 50) {
+  return getDb().prepare(`
+    SELECT
+      mi.id,
+      mi.started_at,
+      mi.ended_at,
+      mi.starred,
+      c.display_name as camera_name
+    FROM motion_incidents mi
+    LEFT JOIN cameras c ON c.id = mi.camera_id
+    WHERE mi.ended_at IS NOT NULL
+    ORDER BY mi.started_at DESC
+    LIMIT ?
+  `).all(limit);
+}
+
+function getLastVisitTime() {
+  const row = getDb().prepare(`
+    SELECT ended_at FROM motion_incidents
+    WHERE ended_at IS NOT NULL
+    ORDER BY ended_at DESC LIMIT 1
+  `).get();
+  return row ? row.ended_at : null;
+}
+
 // --- Clear stats ---
 function clearVisitorHistory() {
   getDb().prepare('DELETE FROM visits').run();
@@ -642,6 +671,8 @@ module.exports = {
   getOldestUnstarredMotionIncidents,
   deleteMotionIncident,
   listRecentMotionIncidents,
+  listRecentVisits,
+  getLastVisitTime,
   getSnapshot,
   addSnapshot,
   getLatestSnapshots,

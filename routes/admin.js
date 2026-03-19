@@ -221,11 +221,25 @@ function escapeHtml(s) {
     .replace(/'/g, '&#x27;');
 }
 
+function getDateLocale() {
+  const setting = db.getSetting('datetime_locale') || 'eu';
+  return setting === 'us' ? 'en-US' : 'sv-SE';
+}
+
 function friendlyDate(iso) {
   if (!iso) return '';
   try {
     const d = new Date(iso + 'Z');
-    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    const locale = getDateLocale();
+    if (locale === 'sv-SE') {
+      // EU style: YYYY-MM-DD for consistency
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+    // US style: e.g. "Sep 23, 2026"
+    return d.toLocaleDateString(locale, { year: 'numeric', month: 'short', day: 'numeric' });
   } catch (_) { return iso; }
 }
 
@@ -945,6 +959,7 @@ router.get('/settings', requireLogin, (req, res) => {
   const motionClipMaxCount = settings.motion_clip_max_count !== undefined ? settings.motion_clip_max_count : '200';
   const motionClipMaxTotalMb = settings.motion_clip_max_total_mb !== undefined ? settings.motion_clip_max_total_mb : '5000';
   const siteName = settings.site_name || 'Birdcam Live';
+  const datetimeLocale = settings.datetime_locale || 'eu';
   res.send(layout('Settings', nav('settings'), `
     <h1>Settings</h1>
     ${req.query.msg ? `<div class="admin-msg admin-msg-ok">${escapeHtml(req.query.msg)}</div>` : ''}
@@ -957,6 +972,19 @@ router.get('/settings', requireLogin, (req, res) => {
           <input type="text" id="site-name" name="site_name" value="${escapeHtml(siteName)}" maxlength="60" style="width:100%;max-width:320px">
         </div>
         <p class="field-hint">Shown in the browser tab, header logo text, and admin panel. Default: Birdcam Live.</p>
+      </fieldset>
+      <fieldset class="settings-group">
+        <legend>Time & Date</legend>
+        <div>
+          <label for="datetime-locale">Display format</label>
+          <select id="datetime-locale" name="datetime_locale">
+            <option value="eu" ${datetimeLocale === 'eu' ? 'selected' : ''}>EU – 24-hour, day-month-year</option>
+            <option value="us" ${datetimeLocale === 'us' ? 'selected' : ''}>US – 12-hour, month-day-year</option>
+          </select>
+        </div>
+        <p class="field-hint">
+          Controls how dates and times are shown in the admin UI (user list, audit log, chat moderation, etc.).
+        </p>
       </fieldset>
       <fieldset class="settings-group">
         <legend>Network / Proxy</legend>
@@ -1341,6 +1369,8 @@ router.post('/settings', requireLogin, verifyCsrf, auditLog('settings.update'), 
   db.setSetting('motion_clip_max_total_mb', String(motionClipMaxTotalMb));
   const siteName = String(req.body.site_name || 'Birdcam Live').trim().slice(0, 60) || 'Birdcam Live';
   db.setSetting('site_name', siteName);
+   const datetimeLocale = req.body.datetime_locale === 'us' ? 'us' : 'eu';
+   db.setSetting('datetime_locale', datetimeLocale);
   res.redirect('/admin/settings?msg=Settings+saved');
 });
 
@@ -1370,7 +1400,9 @@ router.get('/audit', requireLogin, (req, res) => {
   const logs = db.getAuditLogs(Math.min(limit, 500)); // Max 500 entries
 
   const logRows = logs.map(log => {
-    const timestamp = new Date(log.timestamp).toLocaleString('sv-SE');
+    const timestamp = new Date(log.timestamp).toLocaleString(getDateLocale(), {
+      hour12: db.getSetting('datetime_locale') === 'us',
+    });
     const user = log.username ? escapeHtml(log.username) : '<em>unauthenticated</em>';
     const actionClass = log.action.includes('delete') ? 'audit-action-danger' :
                         log.action.includes('create') || log.action.includes('login') ? 'audit-action-success' :
@@ -1523,7 +1555,7 @@ router.get('/chat', requireLogin, (req, res) => {
       <td>${m.id}</td>
       <td>${escapeHtml(m.nickname)}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(m.text)}</td>
-      <td style="font-size:0.85em;color:#999;">${new Date(m.time).toLocaleString('sv-SE')}</td>
+      <td style="font-size:0.85em;color:#999;">${new Date(m.time).toLocaleString(getDateLocale(), { hour12: db.getSetting('datetime_locale') === 'us' })}</td>
       <td style="font-family:monospace;font-size:0.85em;">${escapeHtml(m.ip_address || '-')}</td>
       <td class="actions-cell">
         <form method="post" action="/admin/chat/messages/${m.id}/delete" style="display:inline;">
@@ -1548,7 +1580,7 @@ router.get('/chat', requireLogin, (req, res) => {
       <td style="font-family:monospace;">${escapeHtml(b.ip_address)}</td>
       <td>${escapeHtml(b.reason || '-')}</td>
       <td>${escapeHtml(b.banned_by || '-')}</td>
-      <td style="font-size:0.85em;color:#999;">${new Date(b.created_at).toLocaleString('sv-SE')}</td>
+      <td style="font-size:0.85em;color:#999;">${new Date(b.created_at).toLocaleString(getDateLocale(), { hour12: db.getSetting('datetime_locale') === 'us' })}</td>
       <td class="actions-cell">
         <form method="post" action="/admin/chat/unban" style="display:inline;">
           ${csrfField(req)}

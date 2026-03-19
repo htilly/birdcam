@@ -82,30 +82,27 @@
   const heatCanvas = document.createElement('canvas');
   const heatCtx    = heatCanvas.getContext('2d');
 
-  // Stats tracking
-  let visitCount  = 0;  // one per "visit" (burst of motion frames = one event)
+  // Stats tracking (FPS only; visit stats come from server)
   let frameCount  = 0;
   let lastFpsTime = performance.now();
   let fpsDisplay  = 0;
 
-  // Visit (motion burst) grouping state
-  // Matches server-side cooldown so the log entry represents exactly one recording.
-  let visitCooldownMs   = 30000; // updated from server config messages
-  let activeVisitEl     = null;  // the live <li> being updated
-  let activeVisitStart  = null;  // Date of first frame in visit
-  let activeVisitMaxReg = 0;     // max regions seen during visit
-  let visitSealTimer    = null;  // setTimeout handle to seal the visit
-
-  // Update birds 24h / birds 7d stat boxes from already-fetched chart data.
-  // Called by renderVisitsChart() — no extra HTTP request needed.
+  // Update stat boxes from server data (all stats server-side).
   function updateBirdStats(data) {
-    if (statMotion24h) {
-      const sum24h = (data.byHour || []).reduce((a, b) => a + b.count, 0);
-      statMotion24h.textContent = String(sum24h);
-    }
-    if (statMotion7d) {
-      const sum7d = (data.byDay || []).reduce((a, b) => a + b.count, 0);
-      statMotion7d.textContent = String(sum7d);
+    const sum24h = (data.byHour || []).reduce((a, b) => a + b.count, 0);
+    const sum7d = (data.byDay || []).reduce((a, b) => a + b.count, 0);
+    if (statMotion24h) statMotion24h.textContent = String(sum24h);
+    if (statMotion7d) statMotion7d.textContent = String(sum7d);
+    if (statEvents) statEvents.textContent = String(sum24h);
+    if (statLast && data.last_visit) {
+      try {
+        const t = new Date(data.last_visit);
+        statLast.textContent = Number.isFinite(t.getTime()) ? formatTime(t) : '—';
+      } catch (_) {
+        statLast.textContent = '—';
+      }
+    } else if (statLast) {
+      statLast.textContent = '—';
     }
   }
 
@@ -297,6 +294,12 @@
 
       case 'pong':
         break;
+
+      case 'visit_recorded':
+        // Server finalized a recording; refresh list and stats from server.
+        setTimeout(loadVisitsChart, 2000);
+        setTimeout(loadClips, 2000);
+        break;
     }
   }
 
@@ -304,64 +307,19 @@
   // Motion event handling
   // ---------------------------------------------------------------------------
   function handleMotionEvent(msg) {
-    const { detected, boxes, frame_w, frame_h, timestamp } = msg;
+    const { detected, boxes, frame_w, frame_h } = msg;
 
-    // Update live regions stat
+    // Live overlay only (regions count, boxes, banner). All stats/visit list are server-side.
     statRegions.textContent = boxes ? boxes.length : '0';
 
     if (detected && boxes && boxes.length > 0) {
-      const tMs = Date.parse(timestamp);
-      const tDate = Number.isFinite(tMs) ? new Date(tMs) : new Date();
-
-      statLast.textContent = formatTime(tDate);
-
-      // --- Visit grouping ---
-      // Reset the seal timer on every motion frame (same logic as server-side recording).
-      if (visitSealTimer) { clearTimeout(visitSealTimer); visitSealTimer = null; }
-
-      if (!activeVisitEl) {
-        // First frame of a new visit — open a new log entry and count it.
-        visitCount++;
-        statEvents.textContent = visitCount;
-        activeVisitStart  = tDate;
-        activeVisitMaxReg = boxes.length;
-
-        activeVisitEl = openVisitLogEntry(activeVisitStart, activeVisitMaxReg);
-        showMotionBanner();
-      } else {
-        // Continuing visit — update max regions in the live entry.
-        if (boxes.length > activeVisitMaxReg) {
-          activeVisitMaxReg = boxes.length;
-          updateVisitLogEntry(activeVisitEl, activeVisitStart, tDate, activeVisitMaxReg, true);
-        } else {
-          updateVisitLogEntry(activeVisitEl, activeVisitStart, tDate, activeVisitMaxReg, true);
-        }
-      }
-
-      // Seal after cooldown with no further motion (mirrors server recording end).
-      visitSealTimer = setTimeout(() => sealVisit(), visitCooldownMs);
-
-      // Render overlay
+      showMotionBanner();
       renderOverlay(boxes, frame_w, frame_h);
-
       if (showBounce) spawnBouncingBoxes(boxes, frame_w, frame_h);
       if (showHeatmap) accumulateHeat(boxes, frame_w, frame_h);
     } else {
-      // No motion — clear overlay (fade out)
       fadeOverlay();
     }
-  }
-
-  function sealVisit() {
-    if (!activeVisitEl) return;
-    updateVisitLogEntry(activeVisitEl, activeVisitStart, new Date(), activeVisitMaxReg, false);
-    activeVisitEl    = null;
-    activeVisitStart = null;
-    activeVisitMaxReg = 0;
-    visitSealTimer   = null;
-    // Refresh chart and clips after a visit ends (server has recorded the incident)
-    setTimeout(loadVisitsChart, 2000);
-    setTimeout(loadClips, 2000);
   }
 
   // ---------------------------------------------------------------------------
@@ -562,53 +520,8 @@
     }, 2500);
   }
 
-  // ---------------------------------------------------------------------------
-  // Event log
-  // ---------------------------------------------------------------------------
-  function openVisitLogEntry(startDate, maxRegions) {
-    const empty = eventLog.querySelector('.event-empty');
-    if (empty) empty.remove();
-
-    const li = document.createElement('li');
-    li.className = 'event-item new';
-    li.innerHTML = visitHtml(startDate, null, maxRegions, true);
-    eventLog.prepend(li);
-    requestAnimationFrame(() => requestAnimationFrame(() => li.classList.remove('new')));
-
-    // Limit log to 50 entries
-    const items = eventLog.querySelectorAll('.event-item');
-    if (items.length > 50) items[items.length - 1].remove();
-
-    return li;
-  }
-
-  function updateVisitLogEntry(li, startDate, endDate, maxRegions, active) {
-    li.innerHTML = visitHtml(startDate, endDate, maxRegions, active);
-  }
-
-  function visitHtml(startDate, endDate, maxRegions, active) {
-    const reg = `${maxRegions} region${maxRegions !== 1 ? 's' : ''}`;
-    const duration = endDate ? Math.round((endDate - startDate) / 1000) : null;
-    const durStr = duration != null ? `${duration}s` : '';
-    const activeMarker = active ? '<span class="event-active">●</span>' : '';
-    return `
-      <span class="event-time">${formatTime(startDate)}</span>
-      <span class="event-desc">${reg}${durStr ? ' · ' + durStr : ''}</span>
-      ${activeMarker}
-    `;
-  }
-
   clearLogBtn.addEventListener('click', () => {
-    // Discard any active visit
-    if (visitSealTimer) { clearTimeout(visitSealTimer); visitSealTimer = null; }
-    activeVisitEl     = null;
-    activeVisitStart  = null;
-    activeVisitMaxReg = 0;
-
-    eventLog.innerHTML = '<li class="event-empty">No motion detected yet.</li>';
-    visitCount = 0;
-    statEvents.textContent = '0';
-    statLast.textContent = '—';
+    loadVisitsChart(); // Refresh list and stats from server
   });
 
   // ---------------------------------------------------------------------------
@@ -638,10 +551,7 @@
   // Detector config updates (moved to Admin)
   // ---------------------------------------------------------------------------
   function applyRemoteConfig(msg) {
-    // Capture cooldown so visit grouping matches the server-side recording window.
-    if (msg && msg.cooldown_sec != null) {
-      visitCooldownMs = Number(msg.cooldown_sec) * 1000 || 30000;
-    }
+    // Config from detector (e.g. cooldown_sec); no client-side visit state to sync anymore.
   }
 
   // ---------------------------------------------------------------------------
@@ -876,9 +786,35 @@
       .catch(function() {}); // Silently fail — chart stays empty
   }
 
+  function renderVisitsList(visits) {
+    if (!eventLog) return;
+    eventLog.innerHTML = '';
+    if (!visits || visits.length === 0) {
+      eventLog.innerHTML = '<li class="event-empty">No visits yet.</li>';
+      return;
+    }
+    visits.forEach(function(v) {
+      const li = document.createElement('li');
+      li.className = 'event-item';
+      const start = v.started_at ? new Date(v.started_at) : null;
+      const end = v.ended_at ? new Date(v.ended_at) : null;
+      const dur = start && end && Number.isFinite(start.getTime()) && Number.isFinite(end.getTime())
+        ? Math.round((end - start) / 1000)
+        : null;
+      const timeStr = start ? formatTime(start) : '—';
+      const durStr = dur != null ? dur + 's' : '';
+      const star = v.starred ? ' ★' : '';
+      li.innerHTML = `
+        <span class="event-time">${timeStr}${star}</span>
+        <span class="event-desc">${durStr ? durStr : '—'}</span>
+      `;
+      eventLog.appendChild(li);
+    });
+  }
+
   function renderVisitsChart(data) {
-    // Update birds 24h / 7d stat boxes from the same data — no extra request.
     updateBirdStats(data);
+    renderVisitsList(data.visits || []);
 
     var labels, counts;
 
@@ -938,7 +874,7 @@
       },
       options: {
         responsive: true,
-        maintainAspectRatio: true,
+        maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
           x: { ticks: { font: { size: 10 }, maxRotation: 0 } },

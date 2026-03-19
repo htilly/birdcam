@@ -51,16 +51,30 @@
     <div class="main">
       <section class="video-section">
         <div class="camera-tabs-row">
-          <button type="button" class="snap-btn" id="snap-btn" title="Take snapshot"><img src="cam.png" class="snap-btn-img" alt=""> Snap</button>
           <div class="camera-tabs" id="camera-tabs" role="tablist"></div>
         </div>
-        <div class="snapshot-strip" id="snapshot-strip"></div>
         <div class="video-wrap">
           <video id="video" muted autoplay playsinline></video>
           <div class="video-overlay" id="video-overlay">
             <p>Pick a camera above or add one in Admin.</p>
           </div>
           <button type="button" class="fullscreen-btn" id="fullscreen-btn" title="Fullscreen">⛶</button>
+        </div>
+        <div class="snap-rec-wrap">
+          <div class="snap-row">
+            <button type="button" class="snap-btn" id="snap-btn" title="Take snapshot"><img src="cam.png" class="snap-btn-img" alt=""> Snap</button>
+            <div class="snapshot-strip" id="snapshot-strip"></div>
+          </div>
+          <div class="rec-strip" id="rec-strip"></div>
+          <aside class="recordings-panel" id="recordings-panel">
+            <h2 class="chat-title">Recordings</h2>
+            <div class="recordings-controls">
+              <input type="date" id="rec-date" class="rec-date-input">
+              <select id="rec-camera" class="rec-camera-select"></select>
+              <button type="button" id="rec-search" class="btn-rec-search">Search</button>
+            </div>
+            <div class="rec-list" id="rec-list"><p class="rec-empty">Pick a date and camera, then press Search.</p></div>
+          </aside>
         </div>
       </section>
 
@@ -89,16 +103,6 @@
           <div class="stars-modal-grid" id="stars-modal-grid"></div>
         </div>
       </div>
-
-      <aside class="recordings-panel hidden" id="recordings-panel">
-        <h2 class="chat-title">Recordings</h2>
-        <div class="recordings-controls">
-          <input type="date" id="rec-date" class="rec-date-input">
-          <select id="rec-camera" class="rec-camera-select"></select>
-          <button type="button" id="rec-search" class="btn-rec-search">Search</button>
-        </div>
-        <div class="rec-list" id="rec-list"><p class="rec-empty">Pick a date and camera, then press Search.</p></div>
-      </aside>
 
       <aside class="chat-section">
         <h2 class="chat-title"><img src="chat.png" class="chat-title-img" alt="">Chat</h2>

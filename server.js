@@ -333,8 +333,17 @@ app.get('/api/admin/me', (req, res) => {
   res.json({ isAdmin: !!(req.session && req.session.userId) });
 });
 
+function getUiLocaleConfig() {
+  const setting = db.getSetting('datetime_locale') || 'eu';
+  const locale = setting === 'us' ? 'en-US' : 'sv-SE';
+  const hour12 = setting === 'us';
+  return { setting, locale, hour12 };
+}
+
 app.get('/api/config', (req, res) => {
-  res.json({ siteName: db.getSetting('site_name') || 'Birdcam Live' });
+  const siteName = db.getSetting('site_name') || 'Birdcam Live';
+  const { setting: datetimeLocale, locale, hour12 } = getUiLocaleConfig();
+  res.json({ siteName, datetimeLocale, locale, hour12 });
 });
 
 // Expose VAPID public key so the browser can subscribe to Web Push
@@ -342,24 +351,57 @@ app.get('/api/motion/vapid-public-key', (req, res) => {
   res.json({ publicKey: VAPID_PUBLIC_KEY });
 });
 
-// Public: motion visit stats for the chart (24h by hour, 7d by day)
+// Public: motion visit stats + list (all server-side for chart, event log, and stat boxes)
 app.get('/api/motion-visits/stats', (req, res) => {
-  res.json(db.getMotionVisitStats());
+  const { byHour, byDay } = db.getMotionVisitStats();
+  const visits = db.listRecentVisits(50);
+  const last_visit = db.getLastVisitTime();
+  res.json({ byHour, byDay, last_visit, visits });
 });
 
 // Public: list recent motion clips (no auth required — visible to all visitors)
+// Only include finalized clips (ended + file exists) so they are playable and show correct size.
 app.get('/api/motion-clips', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
   const clips = db.listRecentMotionIncidents(limit);
-  res.json(clips.map(c => ({
-    id:           c.id,
-    started_at:   c.started_at,
-    ended_at:     c.ended_at,
-    size_bytes:   c.size_bytes,
-    camera_name:  c.camera_name,
-    starred:      !!c.starred,
-    filename:     path.basename(c.file_path || ''),
-  })));
+  const out = [];
+  for (const c of clips) {
+    if (c.ended_at == null) continue; // not finalized yet
+    const filename = path.basename(c.file_path || '');
+    if (!filename.endsWith('.mp4')) continue;
+    const filePath = path.join(motionClipsDir, filename);
+    if (!fs.existsSync(filePath)) continue; // file missing, skip so we don't show unplayable clip
+    let sizeBytes = c.size_bytes;
+    if (!sizeBytes || sizeBytes <= 0) {
+      try {
+        const st = fs.statSync(filePath);
+        sizeBytes = st.size || 0;
+      } catch (_) {
+        sizeBytes = 0;
+      }
+    }
+    out.push({
+      id:           c.id,
+      started_at:   c.started_at,
+      ended_at:     c.ended_at,
+      size_bytes:   sizeBytes,
+      camera_name:  c.camera_name,
+      starred:      !!c.starred,
+      filename,
+    });
+    if (out.length >= limit) break;
+  }
+  res.json(out);
+});
+
+// Public: toggle star on a motion clip (used by main page preview strip)
+app.post('/api/motion-clips/:id/star', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+  const incident = db.getMotionIncident(id);
+  if (!incident) return res.status(404).json({ error: 'Not found' });
+  const updated = db.setMotionIncidentStar(id, !incident.starred);
+  res.json({ id: updated.id, starred: !!updated.starred });
 });
 
 // Public: serve motion clip MP4 files by filename (path-traversal safe)
@@ -562,12 +604,13 @@ function startMotionIncident(cameraId, startedAtIso) {
   const args = buildMotionRecordArgs(rtspUrl, filePath, cam);
 
   const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
-
-  proc.stderr.on('data', () => {
-    // Intentionally discard to keep logs clean.
+  const stderrChunks = [];
+  proc.stderr.on('data', (chunk) => {
+    stderrChunks.push(chunk);
+    if (stderrChunks.length > 200) stderrChunks.shift(); // keep last ~200 lines
   });
 
-  return { incidentId, filePath, ffmpegProc: proc, endTimer: null };
+  return { incidentId, filePath, ffmpegProc: proc, endTimer: null, startedAtIso, stderrChunks };
 }
 
 function stopMotionIncident(cameraId, endedAtIso) {
@@ -604,11 +647,28 @@ function stopMotionIncident(cameraId, endedAtIso) {
     db.endMotionIncident(state.incidentId, endedAtIso, sizeBytes);
 
     if (!sizeBytes) {
-      // If no data was produced, remove the row to keep the UI clean.
+      const stderr = (state.stderrChunks || [])
+        .map((c) => c.toString())
+        .join('')
+        .trim()
+        .split('\n')
+        .slice(-25)
+        .join('\n');
+      console.warn(`[motion-ws] Recording produced 0 bytes, removing incident ${state.incidentId}. FFmpeg stderr (last lines):\n${stderr || '(none)'}`);
       try { fs.unlinkSync(state.filePath); } catch (_) {}
       db.deleteMotionIncident(state.incidentId);
     } else {
       enforceMotionClipRetention();
+      // Notify browser clients so they can show a "Visit" even if they missed live motion frames.
+      const payload = JSON.stringify({
+        type: 'visit_recorded',
+        started_at: state.startedAtIso || endedAtIso,
+        ended_at: endedAtIso,
+        camera_id: cameraId,
+      });
+      if (motionBrowserClients.size > 0) {
+        motionBrowserClients.forEach(c => { if (c.readyState === 1) c.send(payload); });
+      }
     }
   };
 
@@ -706,7 +766,9 @@ motionWss.on('connection', (ws, req) => {
           const cameraId = Number(msg.camera_id);
           const detected = msg.detected === true;
           const boxesOk = Array.isArray(msg.boxes) && msg.boxes.length > 0;
-          if (Number.isFinite(cameraId) && detected && boxesOk) {
+          if (!Number.isFinite(cameraId) || cameraId < 1) {
+            console.warn('[motion-ws] Ignoring motion: invalid or missing camera_id', msg.camera_id);
+          } else if (detected && boxesOk) {
             const startedAtIso = msg.timestamp || formatIsoNow();
             const state = activeMotionIncidents.get(cameraId);
             const cooldownMs = safeNumber(motionRuntimeConfig.cooldown_sec, 30) * 1000;
@@ -714,9 +776,12 @@ motionWss.on('connection', (ws, req) => {
             if (!state) {
               const s = startMotionIncident(cameraId, startedAtIso);
               if (s) {
+                console.log(`[motion-ws] Started recording camera ${cameraId}`);
                 s.endTimer = setTimeout(() => stopMotionIncident(cameraId, formatIsoNow()), cooldownMs);
                 activeMotionIncidents.set(cameraId, s);
                 db.updateMotionIncidentLastMotion(s.incidentId, startedAtIso);
+              } else {
+                console.warn(`[motion-ws] Could not start recording: camera ${cameraId} not found or no RTSP URL`);
               }
             } else {
               db.updateMotionIncidentLastMotion(state.incidentId, startedAtIso);

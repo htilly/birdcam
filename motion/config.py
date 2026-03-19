@@ -44,7 +44,8 @@ RELAY_URL = os.environ.get(
 
 # --- Camera Identity (stdin mode) ---
 # When running with --stdin (frames piped from Node), the camera ID is passed here.
-CAMERA_ID = int(os.environ.get("MOTION_CAMERA_ID", 0)) or None
+# Default 1 so the server always gets a valid id (cameras usually start at 1).
+CAMERA_ID = int(os.environ.get("MOTION_CAMERA_ID", 1)) or 1
 
 # --- Web Push (VAPID) ---
 # Generate these with: python generate_keys.py
