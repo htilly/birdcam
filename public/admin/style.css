@@ -937,3 +937,99 @@
     padding: 0.75rem 1.1rem;
   }
 }
+
+/* --- Camera Info & Debug --- */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.info-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.info-table th {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  background: #edf2f7;
+  font-weight: 600;
+  color: #4a5568;
+  width: 40%;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.info-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #e2e8f0;
+  color: #2d3748;
+  word-break: break-word;
+}
+
+.info-muted {
+  color: #a0aec0;
+  font-style: italic;
+}
+
+.info-json {
+  background: #f7fafc;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.debug-commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.debug-log-wrap {
+  background: #1a202c;
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.debug-log-wrap h2 {
+  color: #a0aec0;
+  font-size: 0.85rem;
+  margin: 0 0 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.debug-log-full {
+  color: #68d391;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 0.8rem;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.action-link {
+  text-decoration: none;
+}
+
+.action-btn-danger {
+  border-color: #feb2b2;
+  background: #fff5f5;
+}
+
+.action-btn-danger:hover {
+  border-color: #fc8181;
+  background: #fed7d7;
+}
+
+.action-btn-danger .action-text strong {
+  color: #c53030;
+}

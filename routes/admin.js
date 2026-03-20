@@ -630,14 +630,47 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
                   </span>
                 </button>
               </form>
+              <a href="/admin/cameras/${c.id}/info" class="action-btn action-link">
+                <span class="action-icon">&#x1F4BB;</span>
+                <span class="action-text">
+                  <strong>System info</strong>
+                  <small>View camera details</small>
+                </span>
+              </a>
+              <a href="/admin/cameras/${c.id}/settings" class="action-btn action-link">
+                <span class="action-icon">&#x1F3A5;</span>
+                <span class="action-text">
+                  <strong>Camera settings</strong>
+                  <small>Resolution, bitrate, etc.</small>
+                </span>
+              </a>
+              <a href="/admin/cameras/${c.id}/debug" class="action-btn action-link">
+                <span class="action-icon">&#x1F41B;</span>
+                <span class="action-text">
+                  <strong>Debug</strong>
+                  <small>View XMEye protocol log</small>
+                </span>
+              </a>
             </div>
           </section>
           <section class="form-card form-card-compact form-card-danger">
             <h2 class="form-card-title">Danger Zone</h2>
-            <form method="post" action="/admin/cameras/${c.id}/delete" data-confirm="Delete camera &quot;${escapeHtml(c.display_name)}&quot;? This cannot be undone.">
-              ${csrfField(req)}
-              <button type="submit" class="btn btn-danger btn-block">Delete this camera</button>
-            </form>
+            <div class="action-list">
+              <form method="post" action="/admin/cameras/${c.id}/reboot" data-confirm="Reboot camera &quot;${escapeHtml(c.display_name)}&quot;? The stream will be interrupted.">
+                ${csrfField(req)}
+                <button type="submit" class="action-btn action-btn-danger">
+                  <span class="action-icon">&#x1F504;</span>
+                  <span class="action-text">
+                    <strong>Reboot camera</strong>
+                    <small>Restart the device</small>
+                  </span>
+                </button>
+              </form>
+              <form method="post" action="/admin/cameras/${c.id}/delete" data-confirm="Delete camera &quot;${escapeHtml(c.display_name)}&quot;? This cannot be undone.">
+                ${csrfField(req)}
+                <button type="submit" class="btn btn-danger btn-block">Delete this camera</button>
+              </form>
+            </div>
           </section>
         </aside>
       </div>
@@ -701,6 +734,342 @@ router.post('/cameras/:id/sync-time', requireLogin, verifyCsrf, auditLog('camera
     res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Time sync failed: ' + err.message));
   }
 });
+
+router.post('/cameras/:id/reboot', requireLogin, verifyCsrf, auditLog('camera.reboot'), async (req, res) => {
+  const id = Number(req.params.id);
+  const c = db.getCamera(id);
+  if (!c) return res.redirect('/admin');
+  try {
+    const host = c.rtsp_host;
+    const port = 34567;
+    const username = c.rtsp_username || 'admin';
+    const password = c.rtsp_password || '';
+    await withSession(host, port, username, password, async (session) => {
+      await session.reboot();
+    });
+    await streamManager.stopStream(id);
+    res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Reboot command sent. Camera will restart shortly.'));
+  } catch (err) {
+    console.error('Reboot failed:', err.message);
+    res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Reboot failed: ' + err.message));
+  }
+});
+
+router.get('/cameras/:id/info', requireLogin, async (req, res) => {
+  const id = Number(req.params.id);
+  const c = db.getCamera(id);
+  if (!c) return res.redirect('/admin');
+  let info = null;
+  let error = null;
+  try {
+    const host = c.rtsp_host;
+    const port = 34567;
+    const username = c.rtsp_username || 'admin';
+    const password = c.rtsp_password || '';
+    info = await withSession(host, port, username, password, async (session) => {
+      const [general, cameraTime, encode] = await Promise.all([
+        session.getSystemInfo().catch(() => null),
+        session.getTime().catch(() => null),
+        session.getEncodeConfig().catch(() => null),
+      ]);
+      return { general, cameraTime, encode };
+    });
+  } catch (err) {
+    error = err.message;
+  }
+  res.send(layout('Camera Info', nav('cameras'), `
+    ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name), href: `/admin/cameras/${id}/edit` }, { label: 'System Info' })}
+    <h1>System Info: ${escapeHtml(c.display_name)}</h1>
+    ${error ? `<div class="admin-msg">${escapeHtml(error)}</div>` : ''}
+    ${info ? `
+      <div class="info-grid">
+        ${info.general ? `
+        <section class="form-card">
+          <h2 class="form-card-title">General</h2>
+          <table class="info-table">
+            ${Object.entries(info.general).map(([key, value]) => `
+              <tr><th>${escapeHtml(key)}</th><td>${formatInfoValue(value)}</td></tr>
+            `).join('')}
+          </table>
+        </section>
+        ` : ''}
+        ${info.cameraTime ? `
+        <section class="form-card">
+          <h2 class="form-card-title">Camera Time</h2>
+          <table class="info-table">
+            <tr><th>Camera time</th><td>${escapeHtml(info.cameraTime.toLocaleString())}</td></tr>
+            <tr><th>Server time</th><td>${escapeHtml(new Date().toLocaleString())}</td></tr>
+            <tr><th>Drift</th><td>${formatDrift(info.cameraTime)}</td></tr>
+          </table>
+        </section>
+        ` : ''}
+        ${info.encode ? `
+        <section class="form-card">
+          <h2 class="form-card-title">Encoding</h2>
+          <table class="info-table">
+            ${Object.entries(info.encode).map(([key, value]) => `
+              <tr><th>${escapeHtml(key)}</th><td>${formatInfoValue(value)}</td></tr>
+            `).join('')}
+          </table>
+        </section>
+        ` : ''}
+      </div>
+    ` : ''}
+    <div class="form-actions">
+      <a href="/admin/cameras/${id}/edit" class="btn btn-ghost">Back to camera</a>
+    </div>
+  `));
+});
+
+router.get('/cameras/:id/settings', requireLogin, async (req, res) => {
+  const id = Number(req.params.id);
+  const c = db.getCamera(id);
+  if (!c) return res.redirect('/admin');
+  let cameraConfig = null;
+  let encodeConfig = null;
+  let error = null;
+  try {
+    const host = c.rtsp_host;
+    const port = 34567;
+    const username = c.rtsp_username || 'admin';
+    const password = c.rtsp_password || '';
+    const result = await withSession(host, port, username, password, async (session) => {
+      const [cam, enc] = await Promise.all([
+        session.getCameraConfig().catch(() => null),
+        session.getEncodeConfig().catch(() => null),
+      ]);
+      return { cam, enc };
+    });
+    cameraConfig = result.cam;
+    encodeConfig = result.enc;
+  } catch (err) {
+    error = err.message;
+  }
+  res.send(layout('Camera Settings', nav('cameras'), `
+    ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name), href: `/admin/cameras/${id}/edit` }, { label: 'Settings' })}
+    <h1>Camera Settings: ${escapeHtml(c.display_name)}</h1>
+    ${error ? `<div class="admin-msg">${escapeHtml(error)}</div>` : ''}
+    ${req.query.msg ? `<div class="admin-msg admin-msg-ok">${escapeHtml(req.query.msg)}</div>` : ''}
+    <form method="post" action="/admin/cameras/${id}/settings" class="admin-form">
+      ${csrfField(req)}
+      ${cameraConfig ? `
+      <section class="form-card">
+        <h2 class="form-card-title">Video Settings</h2>
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label for="cam-brightness">Brightness</label>
+            <input type="number" id="cam-brightness" name="brightness" value="${cameraConfig.Brightness ?? ''}" min="0" max="100">
+          </div>
+          <div class="form-field">
+            <label for="cam-contrast">Contrast</label>
+            <input type="number" id="cam-contrast" name="contrast" value="${cameraConfig.Contrast ?? ''}" min="0" max="100">
+          </div>
+          <div class="form-field">
+            <label for="cam-hue">Hue</label>
+            <input type="number" id="cam-hue" name="hue" value="${cameraConfig.Hue ?? ''}" min="0" max="100">
+          </div>
+          <div class="form-field">
+            <label for="cam-saturation">Saturation</label>
+            <input type="number" id="cam-saturation" name="saturation" value="${cameraConfig.Saturation ?? ''}" min="0" max="100">
+          </div>
+          <div class="form-field">
+            <label for="cam-sharpness">Sharpness</label>
+            <input type="number" id="cam-sharpness" name="sharpness" value="${cameraConfig.Sharpness ?? ''}" min="0" max="100">
+          </div>
+          <div class="form-field">
+            <label for="cam-gain">Gain</label>
+            <input type="number" id="cam-gain" name="gain" value="${cameraConfig.Gain ?? ''}" min="0" max="100">
+          </div>
+        </div>
+      </section>
+      ` : ''}
+      ${encodeConfig ? `
+      <section class="form-card">
+        <h2 class="form-card-title">Encoding Settings</h2>
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label for="enc-width">Width</label>
+            <input type="number" id="enc-width" name="video_width" value="${encodeConfig.Video?.Width ?? ''}" min="1">
+          </div>
+          <div class="form-field">
+            <label for="enc-height">Height</label>
+            <input type="number" id="enc-height" name="video_height" value="${encodeConfig.Video?.Height ?? ''}" min="1">
+          </div>
+          <div class="form-field">
+            <label for="enc-fps">FPS</label>
+            <input type="number" id="enc-fps" name="video_fps" value="${encodeConfig.Video?.FPS ?? ''}" min="1" max="60">
+          </div>
+          <div class="form-field">
+            <label for="enc-bitrate">Bitrate (kbps)</label>
+            <input type="number" id="enc-bitrate" name="video_bitrate" value="${encodeConfig.Video?.BitRate ?? ''}" min="1">
+          </div>
+          <div class="form-field">
+            <label for="enc-quality">Quality</label>
+            <select id="enc-quality" name="video_quality">
+              <option value="1" ${encodeConfig.Video?.Quality === 1 ? 'selected' : ''}>Low</option>
+              <option value="2" ${encodeConfig.Video?.Quality === 2 ? 'selected' : ''}>Medium</option>
+              <option value="3" ${encodeConfig.Video?.Quality === 3 ? 'selected' : ''}>High</option>
+              <option value="4" ${encodeConfig.Video?.Quality === 4 ? 'selected' : ''}>Best</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="enc-iframe">I-Frame Interval</label>
+            <input type="number" id="enc-iframe" name="video_iframe" value="${encodeConfig.Video?.GOP ?? ''}" min="1" placeholder="100">
+          </div>
+        </div>
+      </section>
+      ` : ''}
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save settings</button>
+        <a href="/admin/cameras/${id}/edit" class="btn btn-ghost">Cancel</a>
+      </div>
+    </form>
+  `));
+});
+
+router.post('/cameras/:id/settings', requireLogin, verifyCsrf, auditLog('camera.settings'), async (req, res) => {
+  const id = Number(req.params.id);
+  const c = db.getCamera(id);
+  if (!c) return res.redirect('/admin');
+  try {
+    const host = c.rtsp_host;
+    const port = 34567;
+    const username = c.rtsp_username || 'admin';
+    const password = c.rtsp_password || '';
+    await withSession(host, port, username, password, async (session) => {
+      const body = req.body || {};
+      const cameraConfig = await session.getCameraConfig().catch(() => ({}));
+      const encodeConfig = await session.getEncodeConfig().catch(() => ({}));
+      if (body.brightness !== undefined || body.contrast !== undefined) {
+        const updates = {};
+        if (body.brightness !== undefined) updates.Brightness = parseInt(body.brightness);
+        if (body.contrast !== undefined) updates.Contrast = parseInt(body.contrast);
+        if (body.hue !== undefined) updates.Hue = parseInt(body.hue);
+        if (body.saturation !== undefined) updates.Saturation = parseInt(body.saturation);
+        if (body.sharpness !== undefined) updates.Sharpness = parseInt(body.sharpness);
+        if (body.gain !== undefined) updates.Gain = parseInt(body.gain);
+        await session.setCameraConfig(updates).catch(() => {});
+      }
+      if (body.video_width !== undefined || body.video_bitrate !== undefined) {
+        const videoUpdates = { ...encodeConfig.Video };
+        if (body.video_width !== undefined) videoUpdates.Width = parseInt(body.video_width);
+        if (body.video_height !== undefined) videoUpdates.Height = parseInt(body.video_height);
+        if (body.video_fps !== undefined) videoUpdates.FPS = parseInt(body.video_fps);
+        if (body.video_bitrate !== undefined) videoUpdates.BitRate = parseInt(body.video_bitrate);
+        if (body.video_quality !== undefined) videoUpdates.Quality = parseInt(body.video_quality);
+        if (body.video_iframe !== undefined) videoUpdates.GOP = parseInt(body.video_iframe);
+        await session.setEncodeConfig({ ...encodeConfig, Video: videoUpdates }).catch(() => {});
+      }
+    });
+    res.redirect(`/admin/cameras/${id}/settings?msg=` + encodeURIComponent('Settings saved'));
+  } catch (err) {
+    console.error('Settings save failed:', err.message);
+    res.redirect(`/admin/cameras/${id}/settings?msg=` + encodeURIComponent('Failed to save settings: ' + err.message));
+  }
+});
+
+router.get('/cameras/:id/debug', requireLogin, async (req, res) => {
+  const id = Number(req.params.id);
+  const c = db.getCamera(id);
+  if (!c) return res.redirect('/admin');
+  let log = [];
+  let error = null;
+  const cmd = req.query.cmd || 'info';
+  try {
+    const host = c.rtsp_host;
+    const port = 34567;
+    const username = c.rtsp_username || 'admin';
+    const password = c.rtsp_password || '';
+    const { XMEyeSession } = require('../xmeye');
+    const session = new XMEyeSession(host, port, true);
+    await session.connect();
+    try {
+      await session.login(username, password);
+      if (cmd === 'time') {
+        await session.getTime();
+      } else if (cmd === 'config') {
+        await session.getConfig('General');
+        await session.getConfig('Camera');
+        await session.getConfig('Simplify.Encode');
+      } else if (cmd === 'files') {
+        const now = new Date();
+        const yesterday = new Date(now - 24 * 60 * 60 * 1000);
+        await session.listFiles(0, yesterday, now);
+      } else {
+        await session.getSystemInfo();
+        await session.getTime();
+      }
+      log = session.getLog();
+    } finally {
+      session.close();
+    }
+  } catch (err) {
+    error = err.message;
+  }
+  res.send(layout('XMEye Debug', nav('cameras'), `
+    ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name), href: `/admin/cameras/${id}/edit` }, { label: 'Debug' })}
+    <h1>XMEye Debug: ${escapeHtml(c.display_name)}</h1>
+    ${error ? `<div class="admin-msg">${escapeHtml(error)}</div>` : ''}
+    <div class="debug-commands">
+      <a href="/admin/cameras/${id}/debug?cmd=info" class="btn btn-small ${cmd === 'info' ? 'btn-primary' : 'btn-ghost'}">System Info</a>
+      <a href="/admin/cameras/${id}/debug?cmd=time" class="btn btn-small ${cmd === 'time' ? 'btn-primary' : 'btn-ghost'}">Time Query</a>
+      <a href="/admin/cameras/${id}/debug?cmd=config" class="btn btn-small ${cmd === 'config' ? 'btn-primary' : 'btn-ghost'}">All Configs</a>
+      <a href="/admin/cameras/${id}/debug?cmd=files" class="btn btn-small ${cmd === 'files' ? 'btn-primary' : 'btn-ghost'}">List Files</a>
+    </div>
+    <div class="debug-log-wrap">
+      <h2>Communication Log</h2>
+      ${log.length ? `
+        <pre class="debug-log-full">${log.map(e => {
+          const arrow = e.direction === 'send' ? '→' : '←';
+          const msgName = MSG_NAMES[e.msgId] || e.msgId;
+          const body = typeof e.body === 'object' ? JSON.stringify(e.body, null, 2) : (e.payload ? JSON.stringify(e.payload, null, 2) : '');
+          return `[${e.time}] ${arrow} ${msgName}\n${body}`;
+        }).join('\n\n')}</pre>
+      ` : '<p class="info-muted">No log entries</p>'}
+    </div>
+    <div class="form-actions">
+      <a href="/admin/cameras/${id}/edit" class="btn btn-ghost">Back to camera</a>
+    </div>
+  `));
+});
+
+const MSG_NAMES = {
+  1000: 'LOGIN',
+  1001: 'LOGIN_RESP',
+  1002: 'LOGOUT',
+  1006: 'KEEPALIVE',
+  1007: 'KEEPALIVE_RESP',
+  1040: 'CONFIG_SET',
+  1041: 'CONFIG_SET_RESP',
+  1042: 'CONFIG_GET',
+  1043: 'CONFIG_GET_RESP',
+  1412: 'PLAYBACK_CLAIM',
+  1413: 'PLAYBACK_CLAIM_RESP',
+  1420: 'FILE_QUERY',
+  1421: 'FILE_QUERY_RESP',
+  1450: 'TIME_SETTING',
+  1451: 'TIME_SETTING_RESP',
+  1452: 'TIME_QUERY',
+  1453: 'TIME_QUERY_RESP',
+};
+
+function formatInfoValue(value) {
+  if (value == null) return '<span class="info-muted">—</span>';
+  if (typeof value === 'object') {
+    return `<pre class="info-json">${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
+  }
+  return escapeHtml(String(value));
+}
+
+function formatDrift(cameraTime) {
+  const diff = new Date() - cameraTime;
+  const seconds = Math.round(diff / 1000);
+  const abs = Math.abs(seconds);
+  const sign = seconds >= 0 ? '+' : '-';
+  if (abs < 60) return `${sign}${abs}s`;
+  if (abs < 3600) return `${sign}${Math.floor(abs / 60)}m ${abs % 60}s`;
+  return `${sign}${Math.floor(abs / 3600)}h ${Math.floor((abs % 3600) / 60)}m`;
+}
 
 // --- Users ---
 

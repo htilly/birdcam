@@ -32,6 +32,9 @@ const MSG = {
   PLAYBACK_CLAIM_RESP: 1413,
   TIME_QUERY: 1452,
   TIME_SETTING: 1450,
+  CONFIG_GET: 1042,
+  CONFIG_SET: 1040,
+  CONFIG_GET_DEFAULT: 1044,
 };
 
 const HEADER_LEN = 20;
@@ -85,15 +88,38 @@ function parsePacket(buf) {
 }
 
 class XMEyeSession {
-  constructor(host, port) {
+  constructor(host, port, debug = false) {
     this.host = host;
     this.port = port || 34567;
+    this.debug = debug;
     this.socket = null;
     this.sessionId = 0;
     this.seq = 0;
     this._buf = Buffer.alloc(0);
     this._pending = new Map(); // seq -> {resolve, reject, timer}
     this._alive = false;
+    this._log = [];
+  }
+
+  _addLog(direction, data) {
+    const entry = {
+      time: new Date().toISOString(),
+      direction,
+      ...data
+    };
+    this._log.push(entry);
+    if (this.debug) {
+      const arrow = direction === 'send' ? '→' : '←';
+      console.log(`[XMEye] ${arrow} ${data.msgId || ''}`, data.payload || data.body || '');
+    }
+  }
+
+  getLog() {
+    return this._log;
+  }
+
+  clearLog() {
+    this._log = [];
   }
 
   connect() {
@@ -132,6 +158,7 @@ class XMEyeSession {
         clearTimeout(entry.timer);
         this._pending.delete(pkt.seq);
         this._pending.delete(pkt.msgId);
+        this._addLog('recv', { msgId: pkt.msgId, sessionId: pkt.sessionId, seq: pkt.seq, body: pkt.body });
         entry.resolve(pkt.body);
       }
     }
@@ -149,6 +176,7 @@ class XMEyeSession {
     const seq = this.seq++;
     return new Promise((resolve, reject) => {
       const pkt = makePacket(this.sessionId, seq, msgId, payload);
+      this._addLog('send', { msgId, sessionId: this.sessionId, seq, payload });
       const timer = setTimeout(() => {
         this._pending.delete(seq);
         this._pending.delete(msgId + 1);
@@ -226,6 +254,68 @@ class XMEyeSession {
     return this.setTime(new Date());
   }
 
+  async reboot() {
+    const resp = await this.send(MSG.CONFIG_SET, {
+      Name: 'OPMachine',
+      SessionID: `0x${this.sessionId.toString(16).padStart(8, '0')}`,
+      OPMachine: { Action: 'Reboot' },
+    });
+    if (!resp || resp.Ret !== 100) {
+      throw new Error(`Failed to reboot camera: Ret=${resp && resp.Ret}`);
+    }
+    return true;
+  }
+
+  async getConfig(name) {
+    const resp = await this.send(MSG.CONFIG_GET, {
+      Name: name,
+      SessionID: `0x${this.sessionId.toString(16).padStart(8, '0')}`,
+    });
+    if (!resp || resp.Ret !== 100) {
+      throw new Error(`Failed to get config '${name}': Ret=${resp && resp.Ret}`);
+    }
+    return resp[name] || null;
+  }
+
+  async setConfig(name, data) {
+    const resp = await this.send(MSG.CONFIG_SET, {
+      Name: name,
+      SessionID: `0x${this.sessionId.toString(16).padStart(8, '0')}`,
+      [name]: data,
+    });
+    if (!resp || resp.Ret !== 100) {
+      throw new Error(`Failed to set config '${name}': Ret=${resp && resp.Ret}`);
+    }
+    return true;
+  }
+
+  async getSystemInfo() {
+    return this.getConfig('General');
+  }
+
+  async getCameraConfig(channel = 0) {
+    const all = await this.getConfig('Camera');
+    if (!all || !Array.isArray(all)) return null;
+    return all[channel] || all[0] || null;
+  }
+
+  async setCameraConfig(config, channel = 0) {
+    const all = await this.getConfig('Camera');
+    if (!all || !Array.isArray(all)) {
+      throw new Error('Cannot set camera config: unable to get current config');
+    }
+    all[channel] = { ...all[channel], ...config };
+    return this.setConfig('Camera', all);
+  }
+
+  async getEncodeConfig() {
+    return this.getConfig('Simplify.Encode');
+  }
+
+  async setEncodeConfig(config) {
+    return this.setConfig('Simplify.Encode', config);
+  }
+
   async listFiles(channel, startTime, endTime, type = 'h264') {
     const resp = await this.send(MSG.FILE_QUERY, {
       Name: 'OPFileQuery',
@@ -256,8 +346,8 @@ class XMEyeSession {
   }
 }
 
-async function withSession(host, port, username, password, fn) {
-  const session = new XMEyeSession(host, port);
+async function withSession(host, port, username, password, fn, debug = false) {
+  const session = new XMEyeSession(host, port, debug);
   await session.connect();
   try {
     await session.login(username, password);
