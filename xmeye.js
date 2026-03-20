@@ -30,6 +30,8 @@ const MSG = {
   PLAYBACK_START: 1420,
   PLAYBACK_CLAIM: 1412,
   PLAYBACK_CLAIM_RESP: 1413,
+  TIME_QUERY: 1452,
+  TIME_SETTING: 1450,
 };
 
 const HEADER_LEN = 20;
@@ -176,17 +178,60 @@ class XMEyeSession {
     return resp;
   }
 
+  _formatTime(d) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  _parseTime(str) {
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+    if (!match) return null;
+    return new Date(
+      parseInt(match[1]),
+      parseInt(match[2]) - 1,
+      parseInt(match[3]),
+      parseInt(match[4]),
+      parseInt(match[5]),
+      parseInt(match[6])
+    );
+  }
+
+  async getTime() {
+    const resp = await this.send(MSG.TIME_QUERY, {
+      Name: 'OPTimeQuery',
+      SessionID: `0x${this.sessionId.toString(16).padStart(8, '0')}`,
+    });
+    if (!resp || resp.Ret !== 100) {
+      throw new Error(`Failed to get camera time: Ret=${resp && resp.Ret}`);
+    }
+    const timeStr = resp.OPTimeQuery;
+    if (!timeStr) return null;
+    return this._parseTime(timeStr);
+  }
+
+  async setTime(date) {
+    const timeStr = this._formatTime(date);
+    const resp = await this.send(MSG.TIME_SETTING, {
+      Name: 'OPTimeSetting',
+      SessionID: `0x${this.sessionId.toString(16).padStart(8, '0')}`,
+      OPTimeSetting: timeStr,
+    });
+    if (!resp || resp.Ret !== 100) {
+      throw new Error(`Failed to set camera time: Ret=${resp && resp.Ret}`);
+    }
+    return true;
+  }
+
+  async syncTime() {
+    return this.setTime(new Date());
+  }
+
   async listFiles(channel, startTime, endTime, type = 'h264') {
-    // startTime/endTime: Date objects
-    const fmt = (d) => {
-      const pad = (n) => String(n).padStart(2, '0');
-      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-    };
     const resp = await this.send(MSG.FILE_QUERY, {
       Name: 'OPFileQuery',
       OPFileQuery: {
-        BeginTime: fmt(startTime),
-        EndTime: fmt(endTime),
+        BeginTime: this._formatTime(startTime),
+        EndTime: this._formatTime(endTime),
         Channel: channel || 0,
         DriverTypeMask: '0xFFFFFFFF',
         Event: type,

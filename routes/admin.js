@@ -9,6 +9,7 @@ const streamManager = require('../streamManager');
 const { requireLogin, requireSetup, requireNoSetup } = require('../middleware/auth');
 const { auditLog } = require('../middleware/audit');
 const { DEFAULT_FFMPEG_OPTIONS } = streamManager;
+const { withSession } = require('../xmeye');
 
 function getFfmpegOptsForForm(camera) {
   const def = { ...DEFAULT_FFMPEG_OPTIONS };
@@ -575,6 +576,14 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
           </div>
         </div>
       </div>
+      <div class="form-section">
+        <p class="form-section-title">Camera Time Sync</p>
+        <p class="field-hint" style="margin-bottom:0.5rem;">Sync the camera's internal clock with this server's time. Uses XMEye protocol on port 34567.</p>
+        <form method="post" action="/admin/cameras/${c.id}/sync-time" style="display:inline">
+          ${csrfField(req)}
+          <button type="submit" class="btn btn-small">Sync camera time</button>
+        </form>
+      </div>
       ${ffmpegFormSection(ffmpegOpts)}
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Save changes</button>
@@ -611,6 +620,25 @@ router.post('/cameras/:id/delete', requireLogin, verifyCsrf, auditLog('camera.de
     db.deleteCamera(id);
   }
   res.redirect('/admin');
+});
+
+router.post('/cameras/:id/sync-time', requireLogin, verifyCsrf, auditLog('camera.sync_time'), async (req, res) => {
+  const id = Number(req.params.id);
+  const c = db.getCamera(id);
+  if (!c) return res.redirect('/admin');
+  try {
+    const host = c.rtsp_host;
+    const port = 34567;
+    const username = c.rtsp_username || 'admin';
+    const password = c.rtsp_password || '';
+    await withSession(host, port, username, password, async (session) => {
+      await session.syncTime();
+    });
+    res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Camera time synced successfully'));
+  } catch (err) {
+    console.error('Time sync failed:', err.message);
+    res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Time sync failed: ' + err.message));
+  }
 });
 
 // --- Users ---
