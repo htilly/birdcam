@@ -687,10 +687,15 @@ router.post('/cameras/:id/sync-time', requireLogin, verifyCsrf, auditLog('camera
     const port = 34567;
     const username = c.rtsp_username || 'admin';
     const password = c.rtsp_password || '';
-    await withSession(host, port, username, password, async (session) => {
+    const result = await withSession(host, port, username, password, async (session) => {
+      const beforeTime = await session.getTime();
+      const serverTime = new Date();
       await session.syncTime();
+      return { beforeTime, serverTime };
     });
-    res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Camera time synced successfully'));
+    const fmt = (d) => d ? d.toLocaleString('sv-SE') : 'unknown';
+    const msg = `Time synced: ${fmt(result.beforeTime)} → ${fmt(result.serverTime)}`;
+    res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent(msg));
   } catch (err) {
     console.error('Time sync failed:', err.message);
     res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Time sync failed: ' + err.message));
