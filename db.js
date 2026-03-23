@@ -116,6 +116,14 @@ function migrate() {
     d.exec(`ALTER TABLE cameras ADD COLUMN onvif_password TEXT NOT NULL DEFAULT ''`);
   }
 
+  // Time sync scheduling per camera
+  if (!camCols.includes('time_sync_enabled')) {
+    d.exec(`ALTER TABLE cameras ADD COLUMN time_sync_enabled INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!camCols.includes('time_sync_interval_hours')) {
+    d.exec(`ALTER TABLE cameras ADD COLUMN time_sync_interval_hours INTEGER NOT NULL DEFAULT 24`);
+  }
+
   // Ensure settings table exists (for upgrades from older versions)
   const tables = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'").get();
   if (!tables) {
@@ -399,26 +407,33 @@ function createCamera(display_name, host, port, urlPath, username, password, ffm
   return r.lastInsertRowid;
 }
 
-function updateCamera(id, display_name, host, port, urlPath, username, password, ffmpegOptionsJson = null, onvifPort = null, onvifUsername = null, onvifPassword = null) {
+function updateCamera(id, display_name, host, port, urlPath, username, password, ffmpegOptionsJson = null, onvifPort = null, onvifUsername = null, onvifPassword = null, timeSyncEnabled = null, timeSyncIntervalHours = null) {
   const rtsp_url = buildRtspUrl(host, port, urlPath, username, password);
   if (!validateRtspUrl(rtsp_url)) {
     throw new Error('Invalid RTSP URL — only rtsp:// URLs are allowed');
   }
   const d = getDb();
+  const cam = getCamera(id);
+  const enabled = timeSyncEnabled !== null ? (timeSyncEnabled ? 1 : 0) : (cam.time_sync_enabled || 0);
+  const interval = timeSyncIntervalHours !== null ? timeSyncIntervalHours : (cam.time_sync_interval_hours || 24);
   if (ffmpegOptionsJson !== null && ffmpegOptionsJson !== undefined) {
     const opts = typeof ffmpegOptionsJson === 'string' ? ffmpegOptionsJson : JSON.stringify(ffmpegOptionsJson || {});
     d.prepare(
-      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, ffmpeg_options = ?, updated_at = datetime('now') WHERE id = ?"
-    ).run(display_name, rtsp_url, host, port, urlPath, username, password, onvifPort || 8899, onvifUsername || '', onvifPassword || '', opts, id);
+      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, ffmpeg_options = ?, time_sync_enabled = ?, time_sync_interval_hours = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(display_name, rtsp_url, host, port, urlPath, username, password, onvifPort || 8899, onvifUsername || '', onvifPassword || '', opts, enabled, interval, id);
   } else {
     d.prepare(
-      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, updated_at = datetime('now') WHERE id = ?"
-    ).run(display_name, rtsp_url, host, port, urlPath, username, password, onvifPort || 8899, onvifUsername || '', onvifPassword || '', id);
+      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, time_sync_enabled = ?, time_sync_interval_hours = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(display_name, rtsp_url, host, port, urlPath, username, password, onvifPort || 8899, onvifUsername || '', onvifPassword || '', enabled, interval, id);
   }
 }
 
 function deleteCamera(id) {
   getDb().prepare('DELETE FROM cameras WHERE id = ?').run(id);
+}
+
+function getCamerasWithTimeSyncEnabled() {
+  return getDb().prepare('SELECT * FROM cameras WHERE time_sync_enabled = 1').all();
 }
 
 // --- Snapshots ---
@@ -756,6 +771,7 @@ module.exports = {
   createCamera,
   updateCamera,
   deleteCamera,
+  getCamerasWithTimeSyncEnabled,
   getSetting,
   setSetting,
   getAllSettings,

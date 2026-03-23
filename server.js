@@ -21,6 +21,7 @@ const { spawn } = require('child_process');
 const db = require('./db');
 const streamManager = require('./streamManager');
 const motionManager = require('./motionManager');
+const timeSyncScheduler = require('./timeSyncScheduler');
 const adminRoutes = require('./routes/admin');
 const recordingsRoutes = require('./routes/recordings');
 const { requestIdMiddleware } = require('./middleware/requestId');
@@ -105,6 +106,9 @@ streamManager.startAll({ motionCameraId }).then(() => {
   } else {
     console.log('[motion] Motion detector disabled (set enable_motion_detector=true in DB settings to enable)');
   }
+
+  // Initialize time sync scheduler
+  timeSyncScheduler.initializeFromDb();
 }).catch((err) => {
   console.error('Error starting camera streams:', err);
 });
@@ -1176,6 +1180,7 @@ async function shutdown(signal) {
   console.log(`\n${signal} received. Shutting down gracefully...`);
   clearInterval(wsPingInterval);
   motionManager.stopMotionDetector();
+  timeSyncScheduler.stopAll();
   await streamManager.stopAll();
 
   // Stop any in-progress motion incident recordings (best-effort).

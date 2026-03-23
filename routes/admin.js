@@ -6,6 +6,7 @@ const os = require('os');
 const router = express.Router();
 const db = require('../db');
 const streamManager = require('../streamManager');
+const timeSyncScheduler = require('../timeSyncScheduler');
 const { requireLogin, requireSetup, requireNoSetup } = require('../middleware/auth');
 const { auditLog } = require('../middleware/audit');
 const { DEFAULT_FFMPEG_OPTIONS } = streamManager;
@@ -710,6 +711,20 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
               </a>
             </div>
           </section>
+          <section class="form-card form-card-compact">
+            <h2 class="form-card-title">Scheduled Time Sync</h2>
+            <div class="form-field">
+              <label class="checkbox-label">
+                <input type="checkbox" name="time_sync_enabled" value="1" ${c.time_sync_enabled ? 'checked' : ''}>
+                Enable automatic time sync
+              </label>
+              <span class="form-field-hint">Sync camera clock to server time on a schedule</span>
+            </div>
+            <div class="form-field form-field-small">
+              <label for="time-sync-interval">Sync every (hours)</label>
+              <input type="number" id="time-sync-interval" name="time_sync_interval_hours" value="${c.time_sync_interval_hours || 24}" min="1" max="168" placeholder="24">
+            </div>
+          </section>
           <section class="form-card form-card-compact form-card-danger">
             <h2 class="form-card-title">Danger Zone</h2>
             <div class="action-list">
@@ -743,13 +758,15 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
   const id = Number(req.params.id);
   const c = db.getCamera(id);
   if (!c) return res.redirect('/admin');
-  const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, onvif_port, onvif_username, onvif_password } = req.body || {};
+  const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, onvif_port, onvif_username, onvif_password, time_sync_enabled, time_sync_interval_hours } = req.body || {};
   if (!display_name || !rtsp_host) return res.redirect(`/admin/cameras/${id}/edit`);
   const port = parseInt(rtsp_port) || 554;
   const onvifPort = parseInt(onvif_port) || 8899;
   const password = rtsp_password || c.rtsp_password;
   const onvifPw = onvif_password || c.onvif_password;
   const ffmpegOpts = { ...DEFAULT_FFMPEG_OPTIONS, ...ffmpegOptionsFromBody(req.body || {}) };
+  const timeSyncEnabled = time_sync_enabled === '1';
+  const timeSyncInterval = Math.min(168, Math.max(1, parseInt(time_sync_interval_hours) || 24));
   try {
     db.updateCamera(
       id,
@@ -762,8 +779,11 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
       JSON.stringify(ffmpegOpts),
       onvifPort,
       (onvif_username || '').trim(),
-      (onvifPw || '').trim()
+      (onvifPw || '').trim(),
+      timeSyncEnabled,
+      timeSyncInterval
     );
+    timeSyncScheduler.restartScheduler(id);
     await streamManager.stopStream(id);
     const updated = db.getCamera(id);
     await streamManager.startStream(id, updated);
