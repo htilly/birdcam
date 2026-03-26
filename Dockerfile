@@ -3,7 +3,8 @@ FROM node:20-bullseye-slim
 # Accept git commit hash as build arg (for production builds)
 ARG GIT_COMMIT=unknown
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN echo 'exit 101' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d && \
+    apt-get update && apt-get install -y --no-install-recommends \
   ffmpeg \
   python3 python3-pip python3-venv make g++ \
   gosu \
