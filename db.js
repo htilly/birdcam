@@ -76,6 +76,20 @@ function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_motion_incidents_camera_started_at ON motion_incidents(camera_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_motion_incidents_ended_starred ON motion_incidents(ended_at, starred);
+    CREATE TABLE IF NOT EXISTS webauthn_credentials (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      public_key BLOB NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      device_type TEXT NOT NULL DEFAULT 'singleDevice',
+      backed_up INTEGER NOT NULL DEFAULT 0,
+      transports TEXT DEFAULT '[]',
+      webauthn_user_id TEXT NOT NULL,
+      display_name TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_user_id ON webauthn_credentials(user_id);
   `);
 }
 
@@ -256,6 +270,27 @@ function migrate() {
       if (changed) updateOpts.run(JSON.stringify(opts), cam.id);
     } catch (_) {}
   }
+
+  // WebAuthn credentials table
+  const webauthnTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='webauthn_credentials'").get();
+  if (!webauthnTable) {
+    d.exec(`
+      CREATE TABLE webauthn_credentials (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        public_key BLOB NOT NULL,
+        counter INTEGER NOT NULL DEFAULT 0,
+        device_type TEXT NOT NULL DEFAULT 'singleDevice',
+        backed_up INTEGER NOT NULL DEFAULT 0,
+        transports TEXT DEFAULT '[]',
+        webauthn_user_id TEXT NOT NULL,
+        display_name TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_webauthn_credentials_user_id ON webauthn_credentials(user_id);
+    `);
+  }
 }
 
 // --- Settings ---
@@ -375,6 +410,70 @@ function deleteUser(id) {
 
 function verifyPassword(password, hash) {
   return require('bcryptjs').compareSync(password, hash);
+}
+
+// --- WebAuthn Credentials ---
+function addWebAuthnCredential(credential) {
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO webauthn_credentials (id, user_id, public_key, counter, device_type, backed_up, transports, webauthn_user_id, display_name)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    credential.id,
+    credential.user_id,
+    credential.public_key,
+    credential.counter || 0,
+    credential.device_type || 'singleDevice',
+    credential.backed_up ? 1 : 0,
+    JSON.stringify(credential.transports || []),
+    credential.webauthn_user_id,
+    credential.display_name || ''
+  );
+}
+
+function getWebAuthnCredentialsByUserId(userId) {
+  const rows = stmt('getWebAuthnCredentialsByUserId', 'SELECT * FROM webauthn_credentials WHERE user_id = ?').all(userId);
+  return rows.map(row => ({
+    id: row.id,
+    user_id: row.user_id,
+    public_key: row.public_key,
+    counter: row.counter,
+    device_type: row.device_type,
+    backed_up: !!row.backed_up,
+    transports: JSON.parse(row.transports || '[]'),
+    webauthn_user_id: row.webauthn_user_id,
+    display_name: row.display_name,
+    created_at: row.created_at
+  }));
+}
+
+function getWebAuthnCredentialById(credentialId) {
+  const row = stmt('getWebAuthnCredentialById', 'SELECT * FROM webauthn_credentials WHERE id = ?').get(credentialId);
+  if (!row) return null;
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    public_key: row.public_key,
+    counter: row.counter,
+    device_type: row.device_type,
+    backed_up: !!row.backed_up,
+    transports: JSON.parse(row.transports || '[]'),
+    webauthn_user_id: row.webauthn_user_id,
+    display_name: row.display_name,
+    created_at: row.created_at
+  };
+}
+
+function updateWebAuthnCredentialCounter(credentialId, newCounter) {
+  stmt('updateWebAuthnCredentialCounter', 'UPDATE webauthn_credentials SET counter = ? WHERE id = ?').run(newCounter, credentialId);
+}
+
+function deleteWebAuthnCredential(credentialId) {
+  stmt('deleteWebAuthnCredential', 'DELETE FROM webauthn_credentials WHERE id = ?').run(credentialId);
+}
+
+function countWebAuthnCredentialsByUserId(userId) {
+  return stmt('countWebAuthnCredentialsByUserId', 'SELECT COUNT(*) as n FROM webauthn_credentials WHERE user_id = ?').get(userId).n;
 }
 
 function listCameras() {
@@ -815,4 +914,10 @@ module.exports = {
   clearMotionRecordings,
   addAuditLog,
   getAuditLogs,
+  addWebAuthnCredential,
+  getWebAuthnCredentialsByUserId,
+  getWebAuthnCredentialById,
+  updateWebAuthnCredentialCounter,
+  deleteWebAuthnCredential,
+  countWebAuthnCredentialsByUserId,
 };

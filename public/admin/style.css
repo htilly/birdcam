@@ -412,6 +412,39 @@
   margin-bottom: 0.5rem;
 }
 
+.login-divider {
+  display: flex;
+  align-items: center;
+  margin: 1.5rem 0;
+  color: #a0aec0;
+}
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #e2e8f0;
+}
+.login-divider span {
+  padding: 0 1rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.webauthn-icon {
+  margin-right: 0.5rem;
+}
+
+.btn-secondary {
+  background: #4a5568;
+  color: #fff;
+  border: none;
+}
+.btn-secondary:hover {
+  background: #2d3748;
+}
+
 /* --- Debug --- */
 .debug-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
 .debug-select { padding: 0.4rem 0.6rem; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 16px; }

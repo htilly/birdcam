@@ -16,6 +16,8 @@
     "test:history:trend": "node test/history/view.js trend"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.0",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.6.0",
     "cookie-parser": "^1.4.7",
