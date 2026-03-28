@@ -1115,12 +1115,14 @@ router.get('/users', requireLogin, (req, res) => {
     const rows = users.map((u) => {
       const isSelf = req.session.userId === u.id;
       const canDelete = db.countUsers() > 1 && !isSelf;
+      const credCount = db.countWebAuthnCredentialsByUserId(u.id);
       return `
         <tr>
           <td><strong>${escapeHtml(u.username)}</strong>${isSelf ? ' <span style="color:#3182ce;font-size:0.8rem;">(you)</span>' : ''}</td>
           <td>${friendlyDate(u.created_at)}</td>
+          <td>${credCount > 0 ? `<span style="color:#38a169;">&#x1F511; ${credCount}</span>` : '<span style="color:#a0aec0;">—</span>'}</td>
           <td>
-            <a href="/admin/users/${u.id}/edit" class="btn btn-small">Change password</a>
+            <a href="/admin/users/${u.id}/edit" class="btn btn-small">${isSelf ? 'My Account' : 'Edit'}</a>
             ${canDelete ? `
             <form method="post" action="/admin/users/${u.id}/delete" style="display:inline" data-confirm="Delete user &quot;${escapeHtml(u.username)}&quot;?">
               ${csrfField(req)}
@@ -1132,7 +1134,7 @@ router.get('/users', requireLogin, (req, res) => {
     }).join('');
     userContent = `
       <table class="admin-table">
-        <thead><tr><th>Username</th><th>Created</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Username</th><th>Created</th><th>Security Keys</th><th>Actions</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
   } else {
@@ -1213,10 +1215,10 @@ router.get('/users/:id/edit', requireLogin, (req, res) => {
   } else {
     credentialsHtml = `
       <h2 style="margin-top:2rem;">Security Keys</h2>
-      <p style="color:#718096;">No security keys registered.</p>`;
+      <p style="color:#718096;">No security keys registered. ${isSelf ? 'Register a key below for passwordless login.' : ''}</p>`;
   }
 
-  res.send(layout('Edit user', nav('users'), `
+  res.send(layout(isSelf ? 'My Account' : 'Edit user', nav('users'), `
     ${breadcrumb({ label: 'Users', href: '/admin/users' }, { label: escapeHtml(u.username) })}
     <h1>${escapeHtml(u.username)}${isSelf ? ' <span style="color:#3182ce;font-size:0.8rem;">(you)</span>' : ''}</h1>
 
