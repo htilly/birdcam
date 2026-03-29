@@ -4,11 +4,12 @@ FROM node:20-bullseye-slim
 ARG GIT_COMMIT=unknown
 
 RUN echo 'exit 101' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d && \
-    apt-get update && apt-get install -y --no-install-recommends \
-  ffmpeg \
-  python3 python3-pip python3-venv make g++ \
-  gosu \
-  && rm -rf /var/lib/apt/lists/*
+    apt-get update && \
+    (for i in 1 2 3; do apt-get install -y --no-install-recommends \
+      ffmpeg \
+      python3 python3-pip python3-venv make g++ \
+      gosu && break || sleep 5; done) \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
