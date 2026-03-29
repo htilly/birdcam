@@ -251,6 +251,24 @@ function friendlyDate(iso) {
   } catch (_) { return iso; }
 }
 
+function relativeTime(iso) {
+  if (!iso) return 'Never';
+  try {
+    const d = new Date(iso + 'Z');
+    const now = new Date();
+    const diffMs = now - d;
+    const diffSec = Math.floor(diffMs / 1000);
+    const diffMin = Math.floor(diffSec / 60);
+    const diffHour = Math.floor(diffMin / 60);
+    const diffDay = Math.floor(diffHour / 24);
+    if (diffSec < 60) return 'Just now';
+    if (diffMin < 60) return `${diffMin} min ago`;
+    if (diffHour < 24) return `${diffHour}h ago`;
+    if (diffDay < 7) return `${diffDay}d ago`;
+    return friendlyDate(iso);
+  } catch (_) { return iso; }
+}
+
 // --- Simple CSRF using session-bound tokens ---
 function getCsrfToken(req) {
   if (!req.session._csrf) req.session._csrf = crypto.randomBytes(32).toString('hex');
@@ -279,7 +297,7 @@ function verifyCsrf(req, res, next) {
   next();
 }
 
-function nav(active) {
+function nav(active, req) {
   const items = [
     { id: 'cameras', label: 'Cameras', icon: '&#x1F3A5;', href: '/admin' },
     { id: 'snapshots', label: 'Snapshots', icon: '&#x1F4F7;', href: '/admin/snapshots' },
@@ -293,7 +311,10 @@ function nav(active) {
   const links = items.map(i =>
     `<a href="${i.href}" class="nav-item ${active === i.id ? 'active' : ''}"><span class="nav-icon">${i.icon}</span>${i.label}</a>`
   ).join('');
-  return `<nav class="admin-nav">${links}<span class="nav-sep"></span><a href="/" class="nav-item"><span class="nav-icon">&#x1F426;</span>View live</a></nav>`;
+  const myAccountLink = req && req.session && req.session.userId
+    ? `<a href="/admin/users/${req.session.userId}/edit" class="nav-item ${active === 'my-account' ? 'active' : ''}"><span class="nav-icon">&#x1F464;</span>My Account</a>`
+    : '';
+  return `<nav class="admin-nav">${links}<span class="nav-sep"></span>${myAccountLink}<a href="/" class="nav-item"><span class="nav-icon">&#x1F426;</span>View live</a></nav>`;
 }
 
 function breadcrumb(...parts) {
@@ -344,27 +365,34 @@ router.get('/login', (req, res) => {
       <img src="/admin.png" alt="Birdcam Admin" class="admin-login-icon">
       <h1>Log in to Birdcam</h1>
       ${req.query.msg ? `<div class="admin-msg">${escapeHtml(req.query.msg)}</div>` : ''}
+      <button type="button" id="webauthn-passwordless-btn" class="btn btn-primary" style="width:100%;margin-bottom:1rem;">
+        <span class="webauthn-icon">&#x1F511;</span> Log in with Security Key
+      </button>
+      <div class="login-divider"><span>or use password</span></div>
       <form method="post" action="/admin/login" class="admin-form">
         ${csrfField(req)}
         <label for="login-user">Username</label>
-        <input type="text" id="login-user" name="username" required autofocus placeholder="Enter username">
+        <input type="text" id="login-user" name="username" required placeholder="Enter username">
         <label for="login-pw">Password</label>
         <input type="password" id="login-pw" name="password" required placeholder="Enter password">
         <div class="form-actions">
-          <button type="submit" class="btn btn-primary" style="flex:1">Log in</button>
+          <button type="submit" class="btn btn-secondary" style="flex:1">Log in with Password</button>
         </div>
       </form>
+      <div id="webauthn-error" class="admin-msg" style="display:none;background:#fed7d7;color:#c53030;"></div>
       <div style="text-align:center;margin-top:1rem;">
         <a href="/" class="btn btn-ghost">&#x25B6; Back to live stream</a>
       </div>
     </div>
+    <script src="/vendor/simplewebauthn-browser.min.js"></script>
+    <script src="/admin/webauthn-login.js"></script>
   `));
 });
 
 router.post('/login', verifyCsrf, (req, res) => {
   const { username, password } = req.body || {};
   const user = db.findUserByUsername(username);
-  if (!user || !db.verifyPassword(password, user.password_hash)) {
+  if (!user || !user.password_hash || !db.verifyPassword(password, user.password_hash)) {
     // Log failed login attempt
     db.addAuditLog(null, username || 'unknown', 'auth.login.failed', 'Path: /login', req.ip, req.requestId);
     return res.redirect('/admin/login?msg=Invalid+username+or+password');
@@ -394,17 +422,33 @@ router.get('/setup', requireSetup, (req, res) => {
       <img src="/logo.png" alt="Birdcam Live" style="display:block;margin:0 auto 1rem;height:6rem;width:auto;">
       <h1>Welcome to Birdcam</h1>
       <p style="text-align:center;color:#718096;margin-bottom:1.5rem;">Create your admin account to get started.</p>
+      
+      <form id="webauthn-setup-form" class="admin-form">
+        <label for="setup-user-webauthn">Username</label>
+        <input type="text" id="setup-user-webauthn" name="username" required placeholder="Choose a username">
+        <button type="submit" class="btn btn-primary" style="width:100%;margin-bottom:1rem;">
+          <span class="webauthn-icon">&#x1F511;</span> Register with Security Key
+        </button>
+        <p style="text-align:center;color:#718096;font-size:0.85rem;margin:0;">Passwordless login with YubiKey or similar</p>
+      </form>
+      
+      <div class="login-divider"><span>or</span></div>
+      
       <form method="post" action="/admin/setup" class="admin-form">
         ${csrfField(req)}
         <label for="setup-user">Username</label>
-        <input type="text" id="setup-user" name="username" required autofocus placeholder="Choose a username">
+        <input type="text" id="setup-user" name="username" required placeholder="Choose a username">
         <label for="setup-pw">Password</label>
         <input type="password" id="setup-pw" name="password" required minlength="6" placeholder="Min. 6 characters">
         <div class="form-actions">
-          <button type="submit" class="btn btn-primary" style="flex:1">Create admin account</button>
+          <button type="submit" class="btn btn-secondary" style="flex:1">Create with Password</button>
         </div>
       </form>
+      
+      <div id="webauthn-setup-status" class="admin-msg" style="display:none;margin-top:1rem;"></div>
     </div>
+    <script src="/vendor/simplewebauthn-browser.min.js"></script>
+    <script src="/admin/webauthn-setup.js"></script>
   `));
 });
 
@@ -428,6 +472,95 @@ router.post('/setup', requireSetup, verifyCsrf, (req, res) => {
     db.addAuditLog(user.id, user.username, 'auth.setup', 'Path: /setup', req.ip, req.requestId);
     res.redirect('/admin');
   });
+});
+
+// GET /admin/webauthn/setup-options - Generate registration options for new user setup
+router.get('/webauthn/setup-options', requireSetup, async (req, res) => {
+  try {
+    const username = req.query.username;
+    if (!username) return res.status(400).json({ error: 'Username required' });
+
+    const { rpName, rpID } = getWebAuthnRpConfig(req);
+
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID,
+      userName: username,
+      userDisplayName: username,
+      attestationType: 'none',
+      authenticatorSelection: {
+        residentKey: 'required',
+        userVerification: 'required',
+      },
+    });
+
+    req.session.webauthnSetupChallenge = options.challenge;
+    req.session.webauthnSetupUsername = username;
+    res.json(options);
+  } catch (err) {
+    console.error('[webauthn] Setup options error:', err);
+    res.status(500).json({ error: 'Failed to generate registration options' });
+  }
+});
+
+// POST /admin/webauthn/setup-verify - Verify registration for new user setup
+router.post('/webauthn/setup-verify', requireSetup, async (req, res) => {
+  try {
+    const { rpID, origin } = getWebAuthnRpConfig(req);
+    const expectedChallenge = req.session.webauthnSetupChallenge;
+    const username = req.session.webauthnSetupUsername;
+
+    if (!expectedChallenge || !username) {
+      return res.status(400).json({ error: 'No setup challenge in session' });
+    }
+
+    const verification = await verifyRegistrationResponse({
+      response: req.body,
+      expectedChallenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+    });
+
+    if (!verification.verified) {
+      return res.status(400).json({ error: 'Registration verification failed' });
+    }
+
+    const { registrationInfo } = verification;
+    const { credential, credentialDeviceType, credentialBackedUp } = registrationInfo;
+
+    // Create user without password
+    const userId = db.createUserWithoutPassword(username);
+
+    db.addWebAuthnCredential({
+      id: credential.id,
+      user_id: userId,
+      public_key: Buffer.from(credential.publicKey),
+      counter: credential.counter,
+      device_type: credentialDeviceType,
+      backed_up: credentialBackedUp,
+      transports: credential.transports || [],
+      webauthn_user_id: Buffer.from(crypto.randomBytes(32)).toString('base64url'),
+      display_name: '',
+    });
+
+    delete req.session.webauthnSetupChallenge;
+    delete req.session.webauthnSetupUsername;
+
+    const user = db.getUser(userId);
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error('Session regeneration failed:', err);
+        return res.status(500).json({ error: 'Server error' });
+      }
+      req.session.userId = user.id;
+      req.session.username = user.username;
+      db.addAuditLog(user.id, user.username, 'webauthn.setup', `Credential: ${credential.id.slice(0, 8)}...`, req.ip, req.requestId);
+      res.json({ verified: true });
+    });
+  } catch (err) {
+    console.error('[webauthn] Setup verification error:', err);
+    res.status(400).json({ error: err.message || 'Registration verification failed' });
+  }
 });
 
 // --- Dashboard ---
@@ -463,7 +596,7 @@ router.get('/', requireLogin, requireNoSetup, (req, res) => {
         <a href="/admin/cameras/new" class="btn btn-primary">Add camera</a>
       </div>`;
   }
-  res.send(layout('Dashboard', nav('cameras'), `
+  res.send(layout('Dashboard', nav('cameras', req), `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
       <h1 style="margin:0">Cameras</h1>
       ${cameras.length ? '<a href="/admin/cameras/new" class="btn btn-primary btn-small">+ Add camera</a>' : ''}
@@ -481,7 +614,7 @@ router.get('/', requireLogin, requireNoSetup, (req, res) => {
 
 router.get('/cameras/new', requireLogin, (req, res) => {
   const ffmpegOpts = getFfmpegOptsForForm(null);
-  res.send(layout('Add camera', nav('cameras'), `
+  res.send(layout('Add camera', nav('cameras', req), `
     ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: 'Add camera' })}
     <h1>Add camera</h1>
     ${req.query.msg ? `<div class="admin-msg">${escapeHtml(req.query.msg)}</div>` : ''}
@@ -598,7 +731,7 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
   const hasOnvifPw = c.onvif_password ? true : false;
   const ffmpegOpts = getFfmpegOptsForForm(c);
   const onvifCreds = db.getOnvifCredentials(c);
-  res.send(layout('Edit camera', nav('cameras'), `
+  res.send(layout('Edit camera', nav('cameras', req), `
     ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name) })}
     <h1>Edit camera</h1>
     ${req.query.msg ? `<div class="admin-msg admin-msg-ok">${escapeHtml(req.query.msg)}</div>` : ''}
@@ -858,7 +991,7 @@ router.get('/cameras/:id/info', requireLogin, async (req, res) => {
   } catch (err) {
     error = err.message;
   }
-  res.send(layout('Camera Info', nav('cameras'), `
+  res.send(layout('Camera Info', nav('cameras', req), `
     ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name), href: `/admin/cameras/${id}/edit` }, { label: 'System Info' })}
     <h1>System Info: ${escapeHtml(c.display_name)}</h1>
     ${error ? `<div class="admin-msg">${escapeHtml(error)}</div>` : ''}
@@ -922,7 +1055,7 @@ router.get('/cameras/:id/settings', requireLogin, async (req, res) => {
   } catch (err) {
     error = err.message;
   }
-  res.send(layout('Camera Settings', nav('cameras'), `
+  res.send(layout('Camera Settings', nav('cameras', req), `
     ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name), href: `/admin/cameras/${id}/edit` }, { label: 'Settings' })}
     <h1>Camera Settings: ${escapeHtml(c.display_name)}</h1>
     ${error ? `<div class="admin-msg">${escapeHtml(error)}</div>` : ''}
@@ -1056,7 +1189,7 @@ router.get('/cameras/:id/debug', requireLogin, async (req, res) => {
   } catch (err) {
     error = err.message;
   }
-  res.send(layout('ONVIF Debug', nav('cameras'), `
+  res.send(layout('ONVIF Debug', nav('cameras', req), `
     ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name), href: `/admin/cameras/${id}/edit` }, { label: 'Debug' })}
     <h1>ONVIF Debug: ${escapeHtml(c.display_name)}</h1>
     ${error ? `<div class="admin-msg">${escapeHtml(error)}</div>` : ''}
@@ -1104,12 +1237,14 @@ router.get('/users', requireLogin, (req, res) => {
     const rows = users.map((u) => {
       const isSelf = req.session.userId === u.id;
       const canDelete = db.countUsers() > 1 && !isSelf;
+      const credCount = db.countWebAuthnCredentialsByUserId(u.id);
       return `
         <tr>
           <td><strong>${escapeHtml(u.username)}</strong>${isSelf ? ' <span style="color:#3182ce;font-size:0.8rem;">(you)</span>' : ''}</td>
           <td>${friendlyDate(u.created_at)}</td>
+          <td>${credCount > 0 ? `<span style="color:#38a169;">&#x1F511; ${credCount}</span>` : '<span style="color:#a0aec0;">—</span>'}</td>
           <td>
-            <a href="/admin/users/${u.id}/edit" class="btn btn-small">Change password</a>
+            <a href="/admin/users/${u.id}/edit" class="btn btn-small">${isSelf ? 'My Account' : 'Edit'}</a>
             ${canDelete ? `
             <form method="post" action="/admin/users/${u.id}/delete" style="display:inline" data-confirm="Delete user &quot;${escapeHtml(u.username)}&quot;?">
               ${csrfField(req)}
@@ -1121,7 +1256,7 @@ router.get('/users', requireLogin, (req, res) => {
     }).join('');
     userContent = `
       <table class="admin-table">
-        <thead><tr><th>Username</th><th>Created</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Username</th><th>Created</th><th>Security Keys</th><th>Actions</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
   } else {
@@ -1131,7 +1266,7 @@ router.get('/users', requireLogin, (req, res) => {
         <p class="empty-state-text">No users found.</p>
       </div>`;
   }
-  res.send(layout('Users', nav('users'), `
+  res.send(layout('Users', nav('users', req), `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
       <h1 style="margin:0">Users</h1>
       <a href="/admin/users/new" class="btn btn-primary btn-small">+ Add user</a>
@@ -1141,7 +1276,7 @@ router.get('/users', requireLogin, (req, res) => {
 });
 
 router.get('/users/new', requireLogin, (req, res) => {
-  res.send(layout('Add user', nav('users'), `
+  res.send(layout('Add user', nav('users', req), `
     ${breadcrumb({ label: 'Users', href: '/admin/users' }, { label: 'Add user' })}
     <h1>Add user</h1>
     ${req.query.msg ? `<div class="admin-msg">${escapeHtml(req.query.msg)}</div>` : ''}
@@ -1174,19 +1309,116 @@ router.get('/users/:id/edit', requireLogin, (req, res) => {
   const id = Number(req.params.id);
   const u = db.getUser(id);
   if (!u) return res.redirect('/admin/users');
-  res.send(layout('Change password', nav('users'), `
+  const isSelf = req.session.userId === id;
+  const credentials = db.getWebAuthnCredentialsByUserId(id);
+  const csrf = getCsrfToken(req);
+
+  let credentialsHtml = '';
+  if (credentials.length > 0) {
+    const rows = credentials.map(cred => `
+      <tr data-cred-id="${escapeHtml(cred.id)}">
+        <td class="cred-name-cell">
+          <span class="cred-name-display">${escapeHtml(cred.display_name || 'Security Key')}</span>
+          <input type="text" class="cred-name-input" value="${escapeHtml(cred.display_name || '')}" placeholder="e.g. YubiKey 5 NFC" maxlength="50" style="display:none;">
+          <button type="button" class="btn btn-small btn-ghost cred-rename-btn" title="Rename">✏️</button>
+          <button type="button" class="btn btn-small cred-save-btn" style="display:none;">Save</button>
+          <button type="button" class="btn btn-small btn-ghost cred-cancel-btn" style="display:none;">Cancel</button>
+        </td>
+        <td style="font-family:monospace;font-size:0.85rem;color:#718096;">${cred.id.slice(0, 12)}...</td>
+        <td>${cred.device_type === 'multiDevice' ? 'Synced' : 'Single device'}</td>
+        <td title="${cred.last_used_at ? 'Last used: ' + relativeTime(cred.last_used_at) : 'Never used'}">${relativeTime(cred.last_used_at)}</td>
+        <td>${cred.created_at ? friendlyDate(cred.created_at) : 'N/A'}</td>
+        <td>
+          <form method="post" action="/admin/webauthn/${encodeURIComponent(cred.id)}/delete" style="display:inline" data-confirm="Remove this security key?">
+            ${csrfField(req)}
+            <button type="submit" class="btn btn-small btn-danger">Remove</button>
+          </form>
+        </td>
+      </tr>
+    `).join('');
+    credentialsHtml = `
+      <h2 style="margin-top:2rem;">Security Keys</h2>
+      <table class="admin-table">
+        <thead><tr><th>Name</th><th>ID</th><th>Type</th><th>Last used</th><th>Added</th><th>Actions</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <script>
+        (function() {
+          document.querySelectorAll('.cred-rename-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+              const row = this.closest('tr');
+              row.querySelector('.cred-name-display').style.display = 'none';
+              row.querySelector('.cred-name-input').style.display = 'inline';
+              row.querySelector('.cred-rename-btn').style.display = 'none';
+              row.querySelector('.cred-save-btn').style.display = 'inline';
+              row.querySelector('.cred-cancel-btn').style.display = 'inline';
+              row.querySelector('.cred-name-input').focus();
+            });
+          });
+          document.querySelectorAll('.cred-cancel-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+              const row = this.closest('tr');
+              row.querySelector('.cred-name-display').style.display = 'inline';
+              row.querySelector('.cred-name-input').style.display = 'none';
+              row.querySelector('.cred-rename-btn').style.display = 'inline';
+              row.querySelector('.cred-save-btn').style.display = 'none';
+              row.querySelector('.cred-cancel-btn').style.display = 'none';
+            });
+          });
+          document.querySelectorAll('.cred-save-btn').forEach(btn => {
+            btn.addEventListener('click', async function() {
+              const row = this.closest('tr');
+              const credId = row.dataset.credId;
+              const newName = row.querySelector('.cred-name-input').value.trim() || 'Security Key';
+              const res = await fetch('/admin/webauthn/' + encodeURIComponent(credId) + '/rename', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ displayName: newName, _csrf: '${csrf}' })
+              });
+              if (res.ok) {
+                row.querySelector('.cred-name-display').textContent = newName;
+                row.querySelector('.cred-name-display').style.display = 'inline';
+                row.querySelector('.cred-name-input').style.display = 'none';
+                row.querySelector('.cred-rename-btn').style.display = 'inline';
+                row.querySelector('.cred-save-btn').style.display = 'none';
+                row.querySelector('.cred-cancel-btn').style.display = 'none';
+              }
+            });
+          });
+        })();
+      </script>`;
+  } else {
+    credentialsHtml = `
+      <h2 style="margin-top:2rem;">Security Keys</h2>
+      <p style="color:#718096;">No security keys registered. ${isSelf ? 'Register a key below for passwordless login.' : ''}</p>`;
+  }
+
+  res.send(layout(isSelf ? 'My Account' : 'Edit user', nav('users', req), `
     ${breadcrumb({ label: 'Users', href: '/admin/users' }, { label: escapeHtml(u.username) })}
-    <h1>Change password</h1>
-    <p style="color:#718096;margin-bottom:1rem;">Updating password for <strong>${escapeHtml(u.username)}</strong></p>
+    <h1>${escapeHtml(u.username)}${isSelf ? ' <span style="color:#3182ce;font-size:0.8rem;">(you)</span>' : ''}</h1>
+
+    <h2>Password</h2>
     <form method="post" action="/admin/users/${id}" class="admin-form">
       ${csrfField(req)}
       <label for="edit-pw">New password</label>
-      <input type="password" id="edit-pw" name="password" required minlength="6" placeholder="Min. 6 characters">
+      <input type="password" id="edit-pw" name="password" minlength="6" placeholder="Min. 6 characters (leave blank to keep current)">
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">Update password</button>
-        <a href="/admin/users" class="btn btn-ghost">Cancel</a>
       </div>
     </form>
+
+    ${credentialsHtml}
+
+    ${isSelf ? `
+    <div style="margin-top:1.5rem;">
+      <button type="button" id="register-passkey-btn" class="btn btn-secondary">
+        <span style="margin-right:0.5rem;">&#x1F511;</span> Register new Security Key
+      </button>
+    </div>
+    <div id="webauthn-register-status" style="margin-top:1rem;display:none;"></div>
+    <script src="/vendor/simplewebauthn-browser.min.js"></script>
+    <script src="/admin/webauthn-register.js"></script>
+    ` : ''}
   `));
 });
 
@@ -1194,9 +1426,10 @@ router.post('/users/:id', requireLogin, verifyCsrf, auditLog('user.update'), (re
   const id = Number(req.params.id);
   if (!db.getUser(id)) return res.redirect('/admin/users');
   const password = (req.body || {}).password;
-  if (!password || password.length < 6) return res.redirect(`/admin/users/${id}/edit`);
-  db.updateUserPassword(id, password);
-  res.redirect('/admin/users');
+  if (password && password.length >= 6) {
+    db.updateUserPassword(id, password);
+  }
+  res.redirect(`/admin/users/${id}/edit?msg=Password+updated`);
 });
 
 router.post('/users/:id/delete', requireLogin, verifyCsrf, auditLog('user.delete'), (req, res) => {
@@ -1217,7 +1450,7 @@ router.get('/api/visitor-stats', requireLogin, (req, res) => {
 });
 
 router.get('/visitors', requireLogin, (req, res) => {
-  res.send(layout('Visitors', nav('visitors'), `
+  res.send(layout('Visitors', nav('visitors', req), `
     ${breadcrumb({ href: '/admin/visitors', label: 'Visitors' })}
     <h1>Visitor history</h1>
     <p class="visitors-desc">Unique visitors to the live stream page (cookie-based).</p>
@@ -1304,7 +1537,7 @@ router.get('/snapshots', requireLogin, (req, res) => {
         <p class="empty-state-text">No snapshots yet. Visitors can take snapshots from the live stream.</p>
       </div>`;
   }
-  res.send(layout('Snapshots', nav('snapshots'), `
+  res.send(layout('Snapshots', nav('snapshots', req), `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
       <h1 style="margin:0">Snapshots</h1>
     </div>
@@ -1434,7 +1667,7 @@ router.get('/motion-clips', requireLogin, (req, res) => {
       </div>`;
   }
 
-  res.send(layout('Motion Clips', nav('motion-clips'), `
+  res.send(layout('Motion Clips', nav('motion-clips', req), `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
       <h1 style="margin:0">Motion Clips</h1>
     </div>
@@ -1511,7 +1744,7 @@ router.get('/settings', requireLogin, (req, res) => {
   const motionClipMaxTotalMb = settings.motion_clip_max_total_mb !== undefined ? settings.motion_clip_max_total_mb : '5000';
   const siteName = settings.site_name || 'Birdcam Live';
   const datetimeLocale = settings.datetime_locale || 'eu';
-  res.send(layout('Settings', nav('settings'), `
+  res.send(layout('Settings', nav('settings', req), `
     ${breadcrumb({ label: 'Settings', href: '/admin/settings' })}
     <div style="display:flex;flex-direction:column;gap:0.35rem;margin-bottom:1.25rem;">
       <h1 style="margin:0;">Settings</h1>
@@ -1878,7 +2111,7 @@ router.get('/audit', requireLogin, (req, res) => {
     `;
   }).join('');
 
-  res.send(layout('Audit Log', nav('audit'), `
+  res.send(layout('Audit Log', nav('audit', req), `
     <h1>Audit Log</h1>
     <p style="color:#666;margin-bottom:1rem;">Security events and admin actions. Showing last ${logs.length} entries.</p>
 
@@ -1962,7 +2195,7 @@ router.get('/debug', requireLogin, (req, res) => {
   const options = cameras.map(c =>
     `<option value="${c.id}">${escapeHtml(c.display_name)} (cam-${c.id})</option>`
   ).join('');
-  res.send(layout('Debug', nav('cameras'), `
+  res.send(layout('Debug', nav('cameras', req), `
     ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: 'Debug Logs' })}
     <h1>Debug Logs</h1>
     <div class="debug-controls">
@@ -2030,7 +2263,7 @@ router.get('/chat', requireLogin, (req, res) => {
     </tr>
   `).join('');
 
-  res.send(layout('Chat Moderation', nav('chat'), `
+  res.send(layout('Chat Moderation', nav('chat', req), `
     <h1>Chat Moderation</h1>
     ${msg ? `<div class="alert alert-info">${escapeHtml(msg)}</div>` : ''}
 
@@ -2181,6 +2414,258 @@ router.post('/chat/unban', requireLogin, verifyCsrf, auditLog('chat.unban'), (re
   
   db.removeBan(ipAddress);
   res.redirect('/admin/chat?msg=' + encodeURIComponent(`IP ${ipAddress} unbanned`));
+});
+
+// --- WebAuthn / FIDO2 Passkey Authentication ---
+const {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} = require('@simplewebauthn/server');
+
+function getWebAuthnRpConfig(req) {
+  const host = req.hostname || req.headers.host?.split(':')[0] || 'localhost';
+  const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+  return {
+    rpName: 'Birdcam Admin',
+    rpID: host,
+    origin: `${protocol}://${req.headers.host || host}`,
+  };
+}
+
+// GET /admin/webauthn/register-options - Generate registration options (requires login)
+router.get('/webauthn/register-options', requireLogin, async (req, res) => {
+  try {
+    const user = db.getUser(req.session.userId);
+    if (!user) return res.status(401).json({ error: 'User not found' });
+
+    const { rpName, rpID } = getWebAuthnRpConfig(req);
+    const existingCredentials = db.getWebAuthnCredentialsByUserId(user.id);
+
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID,
+      userName: user.username,
+      userDisplayName: user.username,
+      attestationType: 'none',
+      excludeCredentials: existingCredentials.map(cred => ({
+        id: cred.id,
+        transports: cred.transports,
+      })),
+      authenticatorSelection: {
+        residentKey: 'required',
+        userVerification: 'required',
+      },
+    });
+
+    req.session.webauthnRegistrationChallenge = options.challenge;
+    req.session.webauthnRegistrationUserId = user.id;
+    res.json(options);
+  } catch (err) {
+    console.error('[webauthn] Registration options error:', err);
+    res.status(500).json({ error: 'Failed to generate registration options' });
+  }
+});
+
+// POST /admin/webauthn/register-verify - Verify registration response (requires login)
+router.post('/webauthn/register-verify', requireLogin, async (req, res) => {
+  try {
+    const { rpID, origin } = getWebAuthnRpConfig(req);
+    const expectedChallenge = req.session.webauthnRegistrationChallenge;
+
+    if (!expectedChallenge) {
+      return res.status(400).json({ error: 'No registration challenge in session' });
+    }
+
+    const verification = await verifyRegistrationResponse({
+      response: req.body,
+      expectedChallenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+    });
+
+    if (!verification.verified) {
+      return res.status(400).json({ error: 'Registration verification failed' });
+    }
+
+    const { registrationInfo } = verification;
+    const { credential, credentialDeviceType, credentialBackedUp } = registrationInfo;
+
+    db.addWebAuthnCredential({
+      id: credential.id,
+      user_id: req.session.userId,
+      public_key: Buffer.from(credential.publicKey),
+      counter: credential.counter,
+      device_type: credentialDeviceType,
+      backed_up: credentialBackedUp,
+      transports: credential.transports || [],
+      webauthn_user_id: Buffer.from(crypto.randomBytes(32)).toString('base64url'),
+      display_name: req.body.displayName || '',
+    });
+
+    delete req.session.webauthnRegistrationChallenge;
+    db.addAuditLog(req.session.userId, req.session.username, 'webauthn.register', `Credential: ${credential.id.slice(0, 8)}...`, req.ip, req.requestId);
+    res.json({ verified: true });
+  } catch (err) {
+    console.error('[webauthn] Registration verification error:', err);
+    res.status(400).json({ error: err.message || 'Registration verification failed' });
+  }
+});
+
+// POST /admin/webauthn/login-options - Generate authentication options (public)
+router.post('/webauthn/login-options', async (req, res) => {
+  try {
+    const { username } = req.body;
+    if (!username) return res.status(400).json({ error: 'Username required' });
+
+    const user = db.findUserByUsername(username);
+    if (!user) {
+      return res.status(400).json({ error: 'User not found' });
+    }
+
+    const credentials = db.getWebAuthnCredentialsByUserId(user.id);
+    if (credentials.length === 0) {
+      return res.status(400).json({ error: 'No passkeys registered for this user' });
+    }
+
+    const { rpID } = getWebAuthnRpConfig(req);
+
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials: credentials.map(cred => ({
+        id: cred.id,
+        transports: cred.transports,
+      })),
+      userVerification: 'preferred',
+    });
+
+    req.session.webauthnAuthenticationChallenge = options.challenge;
+    req.session.webauthnAuthenticationUserId = user.id;
+    res.json(options);
+  } catch (err) {
+    console.error('[webauthn] Authentication options error:', err);
+    res.status(500).json({ error: 'Failed to generate authentication options' });
+  }
+});
+
+// GET /admin/webauthn/passwordless-options - Generate options for passwordless auth (no username required)
+router.get('/webauthn/passwordless-options', async (req, res) => {
+  try {
+    const { rpID } = getWebAuthnRpConfig(req);
+
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials: [],
+      userVerification: 'required',
+    });
+
+    req.session.webauthnAuthenticationChallenge = options.challenge;
+    delete req.session.webauthnAuthenticationUserId;
+    res.json(options);
+  } catch (err) {
+    console.error('[webauthn] Passwordless options error:', err);
+    res.status(500).json({ error: 'Failed to generate authentication options' });
+  }
+});
+
+// POST /admin/webauthn/login-verify - Verify authentication response (public)
+router.post('/webauthn/login-verify', async (req, res) => {
+  try {
+    const { rpID, origin } = getWebAuthnRpConfig(req);
+    const expectedChallenge = req.session.webauthnAuthenticationChallenge;
+    const userId = req.session.webauthnAuthenticationUserId;
+
+    if (!expectedChallenge) {
+      return res.status(400).json({ error: 'No authentication challenge in session' });
+    }
+
+    const credential = db.getWebAuthnCredentialById(req.body.id);
+    if (!credential) {
+      return res.status(400).json({ error: 'Credential not found' });
+    }
+
+    // For passwordless auth, userId may not be in session - use credential's user_id
+    const effectiveUserId = userId || credential.user_id;
+
+    const verification = await verifyAuthenticationResponse({
+      response: req.body,
+      expectedChallenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+      credential: {
+        id: credential.id,
+        publicKey: new Uint8Array(credential.public_key),
+        counter: credential.counter,
+        transports: credential.transports,
+      },
+    });
+
+    if (!verification.verified) {
+      return res.status(400).json({ error: 'Authentication verification failed' });
+    }
+
+    const { authenticationInfo } = verification;
+    db.updateWebAuthnCredentialCounter(credential.id, authenticationInfo.newCounter);
+
+    const user = db.getUser(effectiveUserId);
+    if (!user) {
+      return res.status(400).json({ error: 'User not found' });
+    }
+
+    delete req.session.webauthnAuthenticationChallenge;
+    delete req.session.webauthnAuthenticationUserId;
+
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error('Session regeneration failed:', err);
+        return res.status(500).json({ error: 'Server error' });
+      }
+      req.session.userId = user.id;
+      req.session.username = user.username;
+      db.addAuditLog(user.id, user.username, 'webauthn.login', `Credential: ${credential.id.slice(0, 8)}...`, req.ip, req.requestId);
+      res.json({ verified: true });
+    });
+  } catch (err) {
+    console.error('[webauthn] Authentication verification error:', err);
+    res.status(400).json({ error: err.message || 'Authentication verification failed' });
+  }
+});
+
+// POST /admin/webauthn/:credId/rename - Rename a credential (requires login)
+router.post('/webauthn/:credId/rename', requireLogin, verifyCsrf, auditLog('webauthn.rename'), (req, res) => {
+  const { credId } = req.params;
+  const { displayName } = req.body;
+  const credential = db.getWebAuthnCredentialById(credId);
+
+  if (!credential) {
+    return res.status(404).json({ error: 'Credential not found' });
+  }
+
+  if (credential.user_id !== req.session.userId) {
+    return res.status(403).json({ error: 'Not authorized' });
+  }
+
+  const name = String(displayName || '').trim().slice(0, 50);
+  db.updateWebAuthnCredentialDisplayName(credId, name);
+  res.json({ success: true, displayName: name });
+});
+
+// POST /admin/webauthn/:credId/delete - Delete a credential (requires login)
+router.post('/webauthn/:credId/delete', requireLogin, verifyCsrf, auditLog('webauthn.delete'), (req, res) => {
+  const { credId } = req.params;
+  const credential = db.getWebAuthnCredentialById(credId);
+
+  if (!credential) {
+    return res.redirect('/admin/users?msg=Credential+not+found');
+  }
+
+  if (credential.user_id !== req.session.userId && db.countUsers() > 1) {
+    return res.redirect('/admin/users?msg=Not+authorized');
+  }
+
+  db.deleteWebAuthnCredential(credId);
+  res.redirect('/admin/users?msg=Security+key+removed');
 });
 
 module.exports = router;

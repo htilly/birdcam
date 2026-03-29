@@ -35,6 +35,9 @@ DILATE_ITERATIONS = int(os.environ.get("MOTION_DILATE_ITERATIONS", 2))
 # Minimum seconds between push notifications (avoid spam)
 NOTIFICATION_COOLDOWN_SEC = int(os.environ.get("MOTION_COOLDOWN_SEC", 30))
 
+# Seconds without motion before recording stops
+RECORDING_COOLDOWN_SEC = int(os.environ.get("MOTION_RECORDING_COOLDOWN_SEC", 3))
+
 # --- WebSocket Relay ---
 # motion.py connects as a client to the Node.js server on this URL.
 # In Docker, use ws://birdcam:3000/motion-ws?role=detector (service name)

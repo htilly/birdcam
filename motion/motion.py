@@ -85,6 +85,7 @@ runtime_config = {
     "min_area": config.MIN_CONTOUR_AREA,
     "threshold_fraction": config.MOTION_THRESHOLD_FRACTION,
     "cooldown_sec": config.NOTIFICATION_COOLDOWN_SEC,
+    "recording_cooldown_sec": config.RECORDING_COOLDOWN_SEC,
 }
 
 
@@ -122,6 +123,10 @@ async def handle_relay_message(raw: str):
             )
         if "cooldown_sec" in msg:
             runtime_config["cooldown_sec"] = max(5, int(msg["cooldown_sec"]))
+        if "recording_cooldown_sec" in msg:
+            runtime_config["recording_cooldown_sec"] = max(
+                1, int(msg["recording_cooldown_sec"])
+            )
         logger.info(f"Config updated by browser: {runtime_config}")
         await send_to_relay({"type": "config", **runtime_config})
 
