@@ -43,6 +43,23 @@ function init() {
       password_hash TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS chat_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nickname TEXT UNIQUE NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS chat_webauthn_credentials (
+      id TEXT PRIMARY KEY,
+      chat_user_id INTEGER NOT NULL,
+      public_key BLOB NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      device_type TEXT NOT NULL DEFAULT 'singleDevice',
+      backed_up INTEGER NOT NULL DEFAULT 0,
+      transports TEXT DEFAULT '[]',
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (chat_user_id) REFERENCES chat_users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_webauthn_credentials_user_id ON chat_webauthn_credentials(chat_user_id);
     CREATE TABLE IF NOT EXISTS cameras (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       display_name TEXT NOT NULL,
@@ -308,6 +325,37 @@ function migrate() {
       ALTER TABLE users_new RENAME TO users;
     `);
   }
+
+  // Chat users table for WebAuthn-based chat identity
+  const chatUsersTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_users'").get();
+  if (!chatUsersTable) {
+    d.exec(`
+      CREATE TABLE chat_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nickname TEXT UNIQUE NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+  }
+
+  // Chat WebAuthn credentials
+  const chatWebauthnTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_webauthn_credentials'").get();
+  if (!chatWebauthnTable) {
+    d.exec(`
+      CREATE TABLE chat_webauthn_credentials (
+        id TEXT PRIMARY KEY,
+        chat_user_id INTEGER NOT NULL,
+        public_key BLOB NOT NULL,
+        counter INTEGER NOT NULL DEFAULT 0,
+        device_type TEXT NOT NULL DEFAULT 'singleDevice',
+        backed_up INTEGER NOT NULL DEFAULT 0,
+        transports TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (chat_user_id) REFERENCES chat_users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_chat_webauthn_credentials_user_id ON chat_webauthn_credentials(chat_user_id);
+    `);
+  }
 }
 
 // --- Settings ---
@@ -501,6 +549,55 @@ function deleteWebAuthnCredential(credentialId) {
 
 function countWebAuthnCredentialsByUserId(userId) {
   return stmt('countWebAuthnCredentialsByUserId', 'SELECT COUNT(*) as n FROM webauthn_credentials WHERE user_id = ?').get(userId).n;
+}
+
+// --- Chat Users (WebAuthn-based identity) ---
+function createChatUser(nickname) {
+  const r = getDb().prepare('INSERT INTO chat_users (nickname) VALUES (?)').run(nickname);
+  return r.lastInsertRowid;
+}
+
+function getChatUser(id) {
+  return stmt('getChatUser', 'SELECT * FROM chat_users WHERE id = ?').get(id);
+}
+
+function getChatUserByNickname(nickname) {
+  return stmt('getChatUserByNickname', 'SELECT * FROM chat_users WHERE nickname = ?').get(nickname);
+}
+
+function addChatWebAuthnCredential(credential) {
+  const d = getDb();
+  d.prepare(`
+    INSERT INTO chat_webauthn_credentials (id, chat_user_id, public_key, counter, device_type, backed_up, transports)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    credential.id,
+    credential.chat_user_id,
+    credential.public_key,
+    credential.counter || 0,
+    credential.device_type || 'singleDevice',
+    credential.backed_up ? 1 : 0,
+    JSON.stringify(credential.transports || [])
+  );
+}
+
+function getChatWebAuthnCredentialById(credentialId) {
+  const row = stmt('getChatWebAuthnCredentialById', 'SELECT * FROM chat_webauthn_credentials WHERE id = ?').get(credentialId);
+  if (!row) return null;
+  return {
+    id: row.id,
+    chat_user_id: row.chat_user_id,
+    public_key: row.public_key,
+    counter: row.counter,
+    device_type: row.device_type,
+    backed_up: !!row.backed_up,
+    transports: JSON.parse(row.transports || '[]'),
+    created_at: row.created_at
+  };
+}
+
+function updateChatWebAuthnCredentialCounter(credentialId, newCounter) {
+  stmt('updateChatWebAuthnCredentialCounter', 'UPDATE chat_webauthn_credentials SET counter = ? WHERE id = ?').run(newCounter, credentialId);
 }
 
 function listCameras() {
@@ -949,4 +1046,10 @@ module.exports = {
   countWebAuthnCredentialsByUserId,
   createUserWithoutPassword,
   hasPassword,
+  createChatUser,
+  getChatUser,
+  getChatUserByNickname,
+  addChatWebAuthnCredential,
+  getChatWebAuthnCredentialById,
+  updateChatWebAuthnCredentialCounter,
 };

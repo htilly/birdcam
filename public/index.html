@@ -120,18 +120,24 @@
         <h2 class="chat-title"><img src="chat.png" class="chat-title-img" alt="">Chat</h2>
         <div class="chat-messages" id="chat-messages"></div>
         <div class="chat-input-wrap">
-          <input type="text" id="nickname" placeholder="Your name" maxlength="30" class="chat-nickname">
+          <div class="chat-identity-row">
+            <input type="text" id="nickname" placeholder="Your name" maxlength="30" class="chat-nickname">
+            <button type="button" id="chat-webauthn-btn" class="btn-chat-webauthn" title="Use security key">&#x1F511;</button>
+          </div>
           <div class="chat-row">
             <input type="text" id="chat-input" placeholder="Say something..." maxlength="500" class="chat-input">
             <button type="button" id="emoji-btn" class="btn-emoji" title="Emoji">😊</button>
             <button type="button" id="chat-send" class="btn-send">Send</button>
           </div>
           <div id="emoji-picker" class="emoji-picker hidden"></div>
+          <div id="chat-webauthn-status" class="chat-webauthn-status hidden"></div>
         </div>
       </aside>
     </div>
   </div>
   <script src="vendor/hls.min.js" data-cfasync="false"></script>
+  <script src="vendor/simplewebauthn-browser.min.js" data-cfasync="false"></script>
   <script src="app.js" data-cfasync="false"></script>
+  <script src="chat-webauthn.js" data-cfasync="false"></script>
 </body>
 </html>

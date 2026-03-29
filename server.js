@@ -26,6 +26,12 @@ const adminRoutes = require('./routes/admin');
 const recordingsRoutes = require('./routes/recordings');
 const { requestIdMiddleware } = require('./middleware/requestId');
 const { auditLog } = require('./middleware/audit');
+const {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} = require('@simplewebauthn/server');
 
 const PORT = process.env.PORT || 3000;
 const BUILD_TIME = new Date().toISOString();
@@ -307,6 +313,168 @@ app.get('/api/visit', (req, res) => {
 app.use('/admin', adminRoutes);
 // (#19) Removed duplicate express.json() — already registered at startup with { limit: '10mb' }
 app.use('/api/recordings', recordingsRoutes(motionClipsDir));
+
+// --- Chat WebAuthn (public, for chat identity) ---
+function getChatWebAuthnRpConfig(req) {
+  const host = req.hostname || req.headers.host?.split(':')[0] || 'localhost';
+  const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+  return {
+    rpName: 'Birdcam Chat',
+    rpID: host,
+    origin: `${protocol}://${req.headers.host || host}`,
+  };
+}
+
+// POST /api/chat/webauthn/register-options
+app.post('/api/chat/webauthn/register-options', async (req, res) => {
+  try {
+    const { nickname } = req.body;
+    if (!nickname || nickname.trim().length < 1 || nickname.trim().length > 30) {
+      return res.status(400).json({ error: 'Nickname required (1-30 characters)' });
+    }
+
+    const trimmedNickname = nickname.trim();
+    const { rpName, rpID } = getChatWebAuthnRpConfig(req);
+
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID,
+      userName: trimmedNickname,
+      userDisplayName: trimmedNickname,
+      attestationType: 'none',
+      authenticatorSelection: {
+        residentKey: 'required',
+        userVerification: 'required',
+      },
+    });
+
+    req.session.chatWebAuthnChallenge = options.challenge;
+    req.session.chatWebAuthnNickname = trimmedNickname;
+    res.json(options);
+  } catch (err) {
+    console.error('[chat-webauthn] Register options error:', err);
+    res.status(500).json({ error: 'Failed to generate registration options' });
+  }
+});
+
+// POST /api/chat/webauthn/register-verify
+app.post('/api/chat/webauthn/register-verify', async (req, res) => {
+  try {
+    const { rpID, origin } = getChatWebAuthnRpConfig(req);
+    const expectedChallenge = req.session.chatWebAuthnChallenge;
+    const nickname = req.session.chatWebAuthnNickname;
+
+    if (!expectedChallenge || !nickname) {
+      return res.status(400).json({ error: 'No registration challenge in session' });
+    }
+
+    const verification = await verifyRegistrationResponse({
+      response: req.body,
+      expectedChallenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+    });
+
+    if (!verification.verified) {
+      return res.status(400).json({ error: 'Registration verification failed' });
+    }
+
+    const { registrationInfo } = verification;
+    const { credential, credentialDeviceType, credentialBackedUp } = registrationInfo;
+
+    let chatUser = db.getChatUserByNickname(nickname);
+    if (!chatUser) {
+      const userId = db.createChatUser(nickname);
+      chatUser = db.getChatUser(userId);
+    }
+
+    db.addChatWebAuthnCredential({
+      id: credential.id,
+      chat_user_id: chatUser.id,
+      public_key: Buffer.from(credential.publicKey),
+      counter: credential.counter,
+      device_type: credentialDeviceType,
+      backed_up: credentialBackedUp,
+      transports: credential.transports || [],
+    });
+
+    delete req.session.chatWebAuthnChallenge;
+    delete req.session.chatWebAuthnNickname;
+
+    res.json({ verified: true, nickname: chatUser.nickname });
+  } catch (err) {
+    console.error('[chat-webauthn] Register verify error:', err);
+    res.status(400).json({ error: err.message || 'Registration verification failed' });
+  }
+});
+
+// GET /api/chat/webauthn/login-options
+app.get('/api/chat/webauthn/login-options', async (req, res) => {
+  try {
+    const { rpID } = getChatWebAuthnRpConfig(req);
+
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials: [],
+      userVerification: 'required',
+    });
+
+    req.session.chatWebAuthnChallenge = options.challenge;
+    res.json(options);
+  } catch (err) {
+    console.error('[chat-webauthn] Login options error:', err);
+    res.status(500).json({ error: 'Failed to generate authentication options' });
+  }
+});
+
+// POST /api/chat/webauthn/login-verify
+app.post('/api/chat/webauthn/login-verify', async (req, res) => {
+  try {
+    const { rpID, origin } = getChatWebAuthnRpConfig(req);
+    const expectedChallenge = req.session.chatWebAuthnChallenge;
+
+    if (!expectedChallenge) {
+      return res.status(400).json({ error: 'No authentication challenge in session' });
+    }
+
+    const credential = db.getChatWebAuthnCredentialById(req.body.id);
+    if (!credential) {
+      return res.status(400).json({ error: 'Credential not found' });
+    }
+
+    const verification = await verifyAuthenticationResponse({
+      response: req.body,
+      expectedChallenge,
+      expectedOrigin: origin,
+      expectedRPID: rpID,
+      credential: {
+        id: credential.id,
+        publicKey: new Uint8Array(credential.public_key),
+        counter: credential.counter,
+        transports: credential.transports,
+      },
+    });
+
+    if (!verification.verified) {
+      return res.status(400).json({ error: 'Authentication verification failed' });
+    }
+
+    const { authenticationInfo } = verification;
+    db.updateChatWebAuthnCredentialCounter(credential.id, authenticationInfo.newCounter);
+
+    const chatUser = db.getChatUser(credential.chat_user_id);
+    if (!chatUser) {
+      return res.status(400).json({ error: 'User not found' });
+    }
+
+    delete req.session.chatWebAuthnChallenge;
+
+    res.json({ verified: true, nickname: chatUser.nickname });
+  } catch (err) {
+    console.error('[chat-webauthn] Login verify error:', err);
+    res.status(400).json({ error: err.message || 'Authentication verification failed' });
+  }
+});
 
 // --- Snapshots (static serving + GET; POST added after wss is created) ---
 // (#22) snapshotDir declared at top of file as shared constant
