@@ -806,6 +806,47 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
               ${ffmpegFormSection(ffmpegOpts)}
             </div>
           </details>
+          <section class="form-card">
+            <h2 class="form-card-title">Motion Detection</h2>
+            <p class="form-card-desc">Adjust sensitivity for bird activity in a nest box.</p>
+            <div class="form-grid-2">
+              <div class="form-field">
+                <label for="motion-preset">Preset</label>
+                <select id="motion-preset" class="motion-preset-select">
+                  <option value="">Custom</option>
+                  <option value="very-sensitive">Very Sensitive (small birds)</option>
+                  <option value="sensitive">Sensitive (normal activity)</option>
+                  <option value="balanced" selected>Balanced (recommended)</option>
+                  <option value="less-sensitive">Less Sensitive (reduce false positives)</option>
+                </select>
+              </div>
+              <div class="form-field"></div>
+            </div>
+            <div class="form-grid-2">
+              <div class="form-field">
+                <label for="motion-min-area">Min area (pixels²)</label>
+                <input type="number" id="motion-min-area" name="motion_min_area" value="${c.motion_min_area || ''}" min="100" max="50000" placeholder="1500">
+                <span class="form-field-hint">Higher = less sensitive</span>
+              </div>
+              <div class="form-field">
+                <label for="motion-threshold">Threshold</label>
+                <input type="number" id="motion-threshold" name="motion_threshold" value="${c.motion_threshold || ''}" min="0.001" max="1" step="0.001" placeholder="0.005">
+                <span class="form-field-hint">Fraction of frame (0.005 = 0.5%)</span>
+              </div>
+            </div>
+            <div class="form-grid-2">
+              <div class="form-field">
+                <label for="motion-blur">Blur kernel</label>
+                <input type="number" id="motion-blur" name="motion_blur_kernel" value="${c.motion_blur_kernel || ''}" min="3" max="51" step="2" placeholder="21">
+                <span class="form-field-hint">Higher = more noise reduction</span>
+              </div>
+              <div class="form-field">
+                <label for="motion-cooldown">Cooldown (sec)</label>
+                <input type="number" id="motion-cooldown" name="motion_cooldown_sec" value="${c.motion_cooldown_sec || ''}" min="1" max="300" placeholder="3">
+                <span class="form-field-hint">Time before recording stops</span>
+              </div>
+            </div>
+          </section>
         </div>
         <aside class="camera-edit-sidebar">
           <section class="form-card form-card-compact">
@@ -858,41 +899,6 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
               <input type="number" id="time-sync-interval" name="time_sync_interval_hours" value="${c.time_sync_interval_hours || 24}" min="1" max="168" placeholder="24">
             </div>
           </section>
-          <section class="form-card form-card-compact">
-            <h2 class="form-card-title">Motion Detection</h2>
-            <p class="form-card-desc">Adjust sensitivity for bird activity in a nest box.</p>
-            <div class="form-field">
-              <label for="motion-preset">Preset</label>
-              <select id="motion-preset" class="motion-preset-select">
-                <option value="">Custom</option>
-                <option value="very-sensitive">Very Sensitive (small birds, quick movements)</option>
-                <option value="sensitive">Sensitive (normal bird activity)</option>
-                <option value="balanced" selected>Balanced (recommended)</option>
-                <option value="less-sensitive">Less Sensitive (reduce false positives)</option>
-              </select>
-            </div>
-            <div class="form-field form-field-small">
-              <label for="motion-min-area">Min area (pixels²)</label>
-              <input type="number" id="motion-min-area" name="motion_min_area" value="${c.motion_min_area || ''}" min="100" max="50000" placeholder="1500">
-              <span class="form-field-hint">Higher = less sensitive (ignore small movements)</span>
-            </div>
-            <div class="form-field form-field-small">
-              <label for="motion-threshold">Threshold (%)</label>
-              <input type="number" id="motion-threshold" name="motion_threshold" value="${c.motion_threshold || ''}" min="0.001" max="1" step="0.001" placeholder="0.005">
-              <span class="form-field-hint">Fraction of frame that must change (0.005 = 0.5%)</span>
-            </div>
-            <div class="form-field form-field-small">
-              <label for="motion-blur">Blur kernel</label>
-              <input type="number" id="motion-blur" name="motion_blur_kernel" value="${c.motion_blur_kernel || ''}" min="3" max="51" step="2" placeholder="21">
-              <span class="form-field-hint">Higher = more noise reduction (must be odd)</span>
-            </div>
-            <div class="form-field form-field-small">
-              <label for="motion-cooldown">Cooldown (sec)</label>
-              <input type="number" id="motion-cooldown" name="motion_cooldown_sec" value="${c.motion_cooldown_sec || ''}" min="1" max="300" placeholder="3">
-              <span class="form-field-hint">Seconds without motion before recording stops</span>
-            </div>
-          </section>
-          <script src="/admin/motion-presets.js"></script>
           <section class="form-card form-card-compact form-card-danger">
             <h2 class="form-card-title">Danger Zone</h2>
             <div class="action-list">
@@ -919,6 +925,7 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
         <a href="/admin" class="btn btn-ghost">Cancel</a>
       </div>
     </form>
+    <script src="/admin/motion-presets.js"></script>
   `));
 });
 
