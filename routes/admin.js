@@ -965,7 +965,7 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
     await streamManager.stopStream(id);
     const updated = db.getCamera(id);
     await streamManager.startStream(id, updated);
-    res.redirect('/admin');
+    res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Camera settings saved'));
   } catch (err) {
     res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent(err.message));
   }
