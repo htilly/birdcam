@@ -902,6 +902,12 @@ function stopMotionIncident(cameraId, endedAtIso) {
 
     db.endMotionIncident(state.incidentId, endedAtIso, sizeBytes);
 
+    // Calculate recording duration in seconds.
+    const startMs = state.startedAtIso ? new Date(state.startedAtIso).getTime() : 0;
+    const endMs   = endedAtIso          ? new Date(endedAtIso).getTime()         : 0;
+    const durationSec = startMs && endMs ? (endMs - startMs) / 1000 : 0;
+    const MIN_RECORDING_SEC = 4;
+
     if (!sizeBytes) {
       const stderr = (state.stderrChunks || [])
         .map((c) => c.toString())
@@ -911,6 +917,10 @@ function stopMotionIncident(cameraId, endedAtIso) {
         .slice(-25)
         .join('\n');
       console.warn(`[motion-ws] Recording produced 0 bytes, removing incident ${state.incidentId}. FFmpeg stderr (last lines):\n${stderr || '(none)'}`);
+      try { fs.unlinkSync(state.filePath); } catch (_) {}
+      db.deleteMotionIncident(state.incidentId);
+    } else if (durationSec > 0 && durationSec < MIN_RECORDING_SEC) {
+      console.info(`[motion-ws] Recording ${state.incidentId} too short (${durationSec.toFixed(1)}s < ${MIN_RECORDING_SEC}s), deleting.`);
       try { fs.unlinkSync(state.filePath); } catch (_) {}
       db.deleteMotionIncident(state.incidentId);
     } else {
