@@ -1,0 +1,337 @@
+name: Deploy to tillyse
+
+# Runs on the self-hosted runner on tillyse after "Build and Push Multi-Platform
+# Docker Image" has successfully pushed new images for a push to main.
+#
+# The runner talks to Docker through a socket-proxy (no docker.sock mount) and
+# only ever recreates the single `birdcam` service -- the ~57 other containers
+# on the host are never touched.
+
+on:
+  workflow_run:
+    workflows: ["Build and Push Multi-Platform Docker Image"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-birdcam-tillyse
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy birdcam to tillyse
+    runs-on: [self-hosted, birdcam]
+
+    # Guard: only deploy something that was actually built from a push to main
+    # in this repository (not a fork, not a PR, not a failed build).
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+
+    env:
+      IMAGE: htilly/birdcam
+      SERVICE: birdcam
+      CONTAINER: birdcam
+      COMPOSE_PROJECT: config
+      COMPOSE_DIR: /config
+      # COMPOSE_FILE_PATH, COMPOSE_ENV_FILE, DOCKER_HOST, NTFY_URL and NTFY_TOKEN
+      # come from the runner container environment (see /config/docker-compose.yml
+      # and /config/secrets/birdcam-runner.env on tillyse).
+
+    steps:
+      # ---------------------------------------------------------------------
+      - name: Preflight
+        id: pre
+        run: |
+          set -euo pipefail
+
+          fail=0
+          for v in DOCKER_HOST NTFY_URL NTFY_TOKEN COMPOSE_FILE_PATH COMPOSE_ENV_FILE; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::$v is not set in the runner environment"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+
+          test -r "$COMPOSE_FILE_PATH" || { echo "::error::cannot read $COMPOSE_FILE_PATH"; exit 1; }
+          docker version --format '{{.Server.Version}}' > /dev/null \
+            || { echo "::error::cannot reach the docker socket proxy at $DOCKER_HOST"; exit 1; }
+
+          # The compose file must actually pin this service to the tag we deploy.
+          # If someone points birdcam back at :dev, a deploy here would recreate
+          # the container on an image this workflow never pulled.
+          if ! grep -qE "^\s+image:\s+${IMAGE}:main\s*$" "$COMPOSE_FILE_PATH"; then
+            echo "::error::$COMPOSE_FILE_PATH does not pin $SERVICE to ${IMAGE}:main"
+            exit 1
+          fi
+
+          FULL_SHA="${{ github.event.workflow_run.head_sha }}"
+          SHORT_SHA="${FULL_SHA:0:7}"
+          STAMP="$(date +%Y%m%d-%H%M%S)"
+
+          echo "full_sha=$FULL_SHA"             >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA"           >> "$GITHUB_OUTPUT"
+          echo "stamp=$STAMP"                   >> "$GITHUB_OUTPUT"
+          echo "rollback_tag=rollback-$STAMP"   >> "$GITHUB_OUTPUT"
+          # used to report how long the deploy took in the success notification
+          echo "started_epoch=$(date +%s)"      >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Deploy birdcam to tillyse"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| commit | \`$FULL_SHA\` |"
+            echo "| expected gitCommit | \`$SHORT_SHA\` |"
+            echo "| rollback tag | \`rollback-$STAMP\` |"
+            echo "| build run | [#${{ github.event.workflow_run.run_number }}](${{ github.event.workflow_run.html_url }}) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------------
+      - name: Tag current image for rollback
+        id: rollback_tag
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.pre.outputs.rollback_tag }}"
+
+          if docker image inspect "$IMAGE:main" > /dev/null 2>&1; then
+            docker tag "$IMAGE:main" "$IMAGE:$TAG"
+            BEFORE=$(docker image inspect -f '{{.Id}}' "$IMAGE:main")
+            echo "tagged $IMAGE:main -> $IMAGE:$TAG ($BEFORE)"
+            echo "available=true"      >> "$GITHUB_OUTPUT"
+            echo "before_id=$BEFORE"   >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::$IMAGE:main not present locally, nothing to roll back to"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "before_id="      >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---------------------------------------------------------------------
+      # Pull the exact sha-pinned tag the build pushed, then move :main onto it.
+      # This is what makes the deploy provably the commit that triggered it --
+      # pulling a floating :main could race with a later build.
+      - name: Pull image built from this commit
+        run: |
+          set -euo pipefail
+          SHORT="${{ steps.pre.outputs.short_sha }}"
+
+          echo "::group::pull $IMAGE:main-$SHORT"
+          docker pull "$IMAGE:main-$SHORT"
+          docker tag  "$IMAGE:main-$SHORT" "$IMAGE:main"
+          echo "after: $(docker image inspect -f '{{.Id}}' "$IMAGE:main")"
+          echo "::endgroup::"
+
+      # ---------------------------------------------------------------------
+      - name: Recreate birdcam
+        run: |
+          set -euo pipefail
+          # --no-deps plus naming the single service explicitly keeps compose away
+          # from the other ~57 containers on this host.
+          docker compose \
+            -p "$COMPOSE_PROJECT" \
+            --project-directory "$COMPOSE_DIR" \
+            --env-file "$COMPOSE_ENV_FILE" \
+            -f "$COMPOSE_FILE_PATH" \
+            up -d --no-deps --force-recreate \
+            "$SERVICE"
+
+      # ---------------------------------------------------------------------
+      # The runner shares config_default with birdcam, so it reaches the
+      # container by name on its internal port 3000.
+      - name: Verify birdcam is the build we just deployed
+        run: |
+          set -euo pipefail
+          EXPECTED="${{ steps.pre.outputs.short_sha }}"
+
+          INFO=""
+          for attempt in $(seq 1 24); do
+            if INFO=$(curl -fsS --max-time 10 http://birdcam:3000/api/build-info); then
+              break
+            fi
+            echo "attempt $attempt: /api/build-info not answering yet"
+            INFO=""
+            sleep 5
+          done
+          [ -n "$INFO" ] || { echo "::error::/api/build-info never responded"; exit 1; }
+
+          echo "build-info: $INFO"
+
+          GIT_COMMIT=$(echo "$INFO" | jq -r '.gitCommit // ""')
+          BUILD_TIME=$(echo "$INFO" | jq -r '.buildTime // ""')
+
+          if [ "$GIT_COMMIT" != "$EXPECTED" ]; then
+            echo "::error::gitCommit mismatch - running '$GIT_COMMIT' but this run deployed commit $EXPECTED."
+            echo "::error::The container is not the image built from ${{ steps.pre.outputs.full_sha }}."
+            exit 1
+          fi
+          echo "gitCommit matches the triggering commit: $GIT_COMMIT (built $BUILD_TIME)"
+
+      # ---------------------------------------------------------------------
+      # birdcam's healthcheck has interval 3m / start_period 30s, so the first
+      # result can be several minutes out. Verified above over HTTP already;
+      # this is the belt-and-braces check that Docker agrees.
+      - name: Wait for birdcam to become healthy
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 420 ))
+
+          echo "::group::$CONTAINER"
+          while :; do
+            STATE=$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo missing)
+            HEALTH=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CONTAINER" 2>/dev/null || echo none)
+            echo "$CONTAINER: state=$STATE health=$HEALTH"
+
+            if [ "$STATE" = "running" ] && { [ "$HEALTH" = "healthy" ] || [ "$HEALTH" = "none" ]; }; then
+              break
+            fi
+            if [ "$STATE" = "exited" ] || [ "$STATE" = "dead" ] || [ "$HEALTH" = "unhealthy" ]; then
+              echo "::error::$CONTAINER is $STATE/$HEALTH"
+              docker logs --tail 80 "$CONTAINER" || true
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::timed out waiting for $CONTAINER (state=$STATE health=$HEALTH)"
+              docker logs --tail 80 "$CONTAINER" || true
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "::endgroup::"
+
+      # ---------------------------------------------------------------------
+      - name: Verify the published port mapping is intact
+        run: |
+          set -euo pipefail
+          MAP=$(docker inspect -f '{{range $p, $conf := .NetworkSettings.Ports}}{{$p}}->{{range $conf}}{{.HostPort}}{{end}} {{end}}' "$CONTAINER")
+          echo "ports: $MAP"
+          echo "$MAP" | grep -q '3000/tcp->7000' \
+            || { echo "::error::birdcam is not published on host port 7000 (got: $MAP)"; exit 1; }
+
+      # ---------------------------------------------------------------------
+      # Automatic rollback: retag the pre-deploy image back onto :main and
+      # recreate the same single service. Only runs if an earlier step failed
+      # and we actually captured a rollback image.
+      - name: Roll back on failure
+        if: failure() && steps.rollback_tag.outputs.available == 'true'
+        run: |
+          set -uo pipefail
+          TAG="${{ steps.pre.outputs.rollback_tag }}"
+          echo "::warning::rolling $IMAGE:main back to $IMAGE:$TAG"
+
+          docker tag "$IMAGE:$TAG" "$IMAGE:main" || { echo "::error::retag failed"; exit 1; }
+          docker compose \
+            -p "$COMPOSE_PROJECT" \
+            --project-directory "$COMPOSE_DIR" \
+            --env-file "$COMPOSE_ENV_FILE" \
+            -f "$COMPOSE_FILE_PATH" \
+            up -d --no-deps --force-recreate \
+            "$SERVICE" || { echo "::error::rollback recreate failed - birdcam may be down"; exit 1; }
+
+          for attempt in $(seq 1 24); do
+            if INFO=$(curl -fsS --max-time 10 http://birdcam:3000/api/build-info); then
+              echo "rolled back, now running: $INFO"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::rolled back but birdcam is not answering on /api/build-info"
+          exit 1
+
+      # ---------------------------------------------------------------------
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo ""
+            echo "Deploy succeeded. All checks passed."
+            echo ""
+            echo "Roll back manually with, on tillyse:"
+            echo '```bash'
+            echo "docker tag $IMAGE:${{ steps.pre.outputs.rollback_tag }} $IMAGE:main"
+            echo "cd /config && docker compose -p config --env-file /config/birdcam-runner/compose.env \\"
+            echo "  -f /config/docker-compose.yml up -d --no-deps --force-recreate birdcam"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------------
+      # Same topic, auth and header pattern as the failure step below; only the
+      # priority and tag differ so the two are instantly tellable apart in the
+      # ntfy feed (white_check_mark vs warning, default vs high).
+      - name: Notify ntfy on success
+        if: success()
+        env:
+          # The commit message is attacker-controllable text. It goes through the
+          # environment and is only ever referenced as "$COMMIT_MESSAGE" so it
+          # cannot be interpolated into the script body and executed.
+          COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+        run: |
+          set -uo pipefail
+
+          SHORT="${{ steps.pre.outputs.short_sha }}"
+          STARTED="${{ steps.pre.outputs.started_epoch }}"
+          SERVICES="birdcam"
+
+          SUBJECT=$(printf '%s' "$COMMIT_MESSAGE" | head -n 1 | cut -c1-120)
+          [ -n "$SUBJECT" ] || SUBJECT="(inget commit-meddelande)"
+
+          if [ -n "$STARTED" ]; then
+            D=$(( $(date +%s) - STARTED ))
+            if [ "$D" -ge 60 ]; then DUR="$(( D / 60 ))m $(( D % 60 ))s"; else DUR="${D}s"; fi
+          else
+            DUR="okant"
+          fi
+
+          BODY=$(printf '%s\n' \
+            "$SUBJECT" \
+            "Omstartade: $SERVICES" \
+            "Tid: $DUR")
+
+          if [ -z "${NTFY_TOKEN:-}" ]; then
+            echo "::error::NTFY_TOKEN missing - could not send the success notification"
+            exit 1
+          fi
+
+          curl -s -H "Authorization: Bearer $NTFY_TOKEN" \
+               -H "Title: birdcam deployad: $SHORT" \
+               -H "Priority: default" \
+               -H "Tags: white_check_mark" \
+               -d "$BODY" \
+               "$NTFY_URL" > /dev/null \
+            && echo "ntfy success notification sent" \
+            || echo "::warning::ntfy success notification could not be sent"
+
+      # ---------------------------------------------------------------------
+      - name: Notify ntfy on failure
+        if: failure()
+        run: |
+          set -uo pipefail
+          TAG="${{ steps.pre.outputs.rollback_tag }}"
+          SHORT="${{ steps.pre.outputs.short_sha }}"
+          ROLLED="${{ steps.rollback_tag.outputs.available == 'true' && 'ja (automatisk)' || 'nej - ingen rollback-image fanns' }}"
+
+          BODY=$(printf '%s\n' \
+            "Deployen av birdcam misslyckades pa tillyse ($(date '+%Y-%m-%d %H:%M'))." \
+            "Commit: ${SHORT:-okant}" \
+            "Rollback-tagg: ${TAG:-ingen skapad}" \
+            "Aterstalld: $ROLLED" \
+            "Logg: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}")
+
+          if [ -z "${NTFY_TOKEN:-}" ]; then
+            echo "::error::NTFY_TOKEN missing - could not send the failure notification"
+            exit 1
+          fi
+
+          curl -s -H "Authorization: Bearer $NTFY_TOKEN" \
+               -H "Title: birdcam deploy misslyckades" \
+               -H "Priority: high" \
+               -H "Tags: warning" \
+               -d "$BODY" \
+               "$NTFY_URL" > /dev/null \
+            && echo "ntfy notification sent" \
+            || echo "::warning::ntfy notification could not be sent"
