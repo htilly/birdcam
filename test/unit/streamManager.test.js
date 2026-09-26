@@ -4,6 +4,7 @@ const {
   DEFAULT_FFMPEG_OPTIONS,
   parseFfmpegOptions,
   buildFfmpegArgs,
+  validateCustomFfmpegOptions,
 } = require('../../streamManager');
 
 describe('streamManager.parseFfmpegOptions', () => {
@@ -43,9 +44,6 @@ describe('streamManager.parseFfmpegOptions', () => {
     const opts = parseFfmpegOptions({});
     assert.strictEqual(opts.rtsp_transport, 'tcp');
     assert.strictEqual(opts.use_wallclock_as_timestamps, 1);
-    assert.strictEqual(opts.reconnect, 1);
-    assert.strictEqual(opts.reconnect_streamed, 1);
-    assert.strictEqual(opts.reconnect_delay_max, 5);
     assert.strictEqual(opts.input_fps, 8);
     assert.strictEqual(opts.video_codec, 'libx264');
     assert.strictEqual(opts.preset, 'veryfast');
@@ -254,6 +252,96 @@ describe('streamManager.DEFAULT_FFMPEG_OPTIONS', () => {
     assert.strictEqual(DEFAULT_FFMPEG_OPTIONS.crf, 28);
     assert.strictEqual(DEFAULT_FFMPEG_OPTIONS.hls_time, 2);
     assert.strictEqual(DEFAULT_FFMPEG_OPTIONS.hls_list_size, 6);
-    assert.strictEqual(DEFAULT_FFMPEG_OPTIONS.reconnect, 1);
+  });
+
+  it('has no http-only reconnect options', () => {
+    assert.ok(!DEFAULT_FFMPEG_OPTIONS.hasOwnProperty('reconnect'));
+    assert.ok(!DEFAULT_FFMPEG_OPTIONS.hasOwnProperty('reconnect_streamed'));
+    assert.ok(!DEFAULT_FFMPEG_OPTIONS.hasOwnProperty('reconnect_delay_max'));
+  });
+});
+
+describe('streamManager.validateCustomFfmpegOptions', () => {
+  it('accepts defaults', () => {
+    const r = validateCustomFfmpegOptions(DEFAULT_FFMPEG_OPTIONS);
+    assert.deepStrictEqual(r.errors, []);
+    assert.strictEqual(r.scaleVf, DEFAULT_FFMPEG_OPTIONS.scale_vf);
+    assert.deepStrictEqual(r.extraInputArgs, []);
+    assert.deepStrictEqual(r.extraOutputArgs, []);
+  });
+
+  it('accepts allowlisted extra args with safe values', () => {
+    const r = validateCustomFfmpegOptions({
+      extra_input_args: '-analyzeduration 1M -probesize 1M -err_detect ignore_err',
+      extra_output_args: '-maxrate 2M -bufsize 4M -tag:v hvc1 -start_number -1',
+    });
+    assert.deepStrictEqual(r.errors, []);
+    assert.deepStrictEqual(r.extraInputArgs, ['-analyzeduration', '1M', '-probesize', '1M', '-err_detect', 'ignore_err']);
+    assert.deepStrictEqual(r.extraOutputArgs, ['-maxrate', '2M', '-bufsize', '4M', '-tag:v', 'hvc1', '-start_number', '-1']);
+  });
+
+  it('rejects extra output that overwrites a file', () => {
+    const r = validateCustomFfmpegOptions({ extra_output_args: '-f data -y /app/public/app.js' });
+    assert.ok(r.errors.length > 0);
+    assert.deepStrictEqual(r.extraOutputArgs, []);
+  });
+
+  it('rejects options not on the allowlist', () => {
+    for (const bad of ['-i foo', '-filter_complex movie=x', '-x264-params stats=server.js', '-map 0', '-y']) {
+      const r = validateCustomFfmpegOptions({ extra_input_args: bad });
+      assert.ok(r.errors.length > 0, bad);
+      assert.deepStrictEqual(r.extraInputArgs, [], bad);
+    }
+  });
+
+  it('rejects bare values and missing values', () => {
+    assert.ok(validateCustomFfmpegOptions({ extra_output_args: 'out.mp4' }).errors.length > 0);
+    assert.ok(validateCustomFfmpegOptions({ extra_output_args: '-threads' }).errors.length > 0);
+  });
+
+  it('rejects values containing path separators or option-like values', () => {
+    assert.ok(validateCustomFfmpegOptions({ extra_output_args: '-metadata title=a/b' }).errors.length > 0);
+    assert.ok(validateCustomFfmpegOptions({ extra_output_args: '-metadata title=a\\b' }).errors.length > 0);
+    const r = validateCustomFfmpegOptions({ extra_output_args: '-threads -y -bufsize 1M' });
+    assert.ok(r.errors.length > 0);
+    // the valid pair after the invalid one is still recognized
+    assert.deepStrictEqual(r.extraOutputArgs, ['-bufsize', '1M']);
+  });
+
+  it('accepts simple scale filter chains', () => {
+    for (const vf of ['scale=1280:720', 'scale=in_range=full:out_range=tv', 'fps=10,format=yuv420p', 'hflip,vflip', 'transpose=1', 'crop=640:480:0:0']) {
+      const r = validateCustomFfmpegOptions({ scale_vf: vf });
+      assert.deepStrictEqual(r.errors, [], vf);
+      assert.strictEqual(r.scaleVf, vf);
+    }
+  });
+
+  it('rejects dangerous scale filters', () => {
+    for (const vf of ['movie=/etc/passwd', 'amovie=x.wav', 'scale=1:1,movie=a', 'scale=1:1;[in]null', '[in]scale=1:1', 'crop=iw/2:ih', 'drawtext=textfile=x']) {
+      const r = validateCustomFfmpegOptions({ scale_vf: vf });
+      assert.ok(r.errors.length > 0, vf);
+      assert.strictEqual(r.scaleVf, '', vf);
+    }
+  });
+});
+
+describe('streamManager.buildFfmpegArgs custom option sanitizing', () => {
+  const rtspUrl = 'rtsp://example.com/stream';
+  const outBase = '/tmp/hls/cam1';
+
+  it('drops unsafe extra args and scale filter', (t) => {
+    t.mock.method(console, 'warn', () => {});
+    const args = buildFfmpegArgs(rtspUrl, outBase, {
+      extra_input_args: '-probesize 1M -f data',
+      extra_output_args: '-f data -y /app/public/app.js',
+      scale_vf: 'movie=/etc/passwd',
+    });
+    assert.ok(args.includes('-probesize'));
+    assert.ok(!args.includes('/app/public/app.js'));
+    assert.ok(!args.includes('data'));
+    assert.ok(!args.includes('-y'));
+    assert.ok(!args.includes('-vf'));
+    assert.ok(console.warn.mock.callCount() > 0);
+    assert.strictEqual(args[args.length - 1], `${outBase}.m3u8`);
   });
 });

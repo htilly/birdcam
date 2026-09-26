@@ -26,9 +26,6 @@ function getFfmpegOptsForForm(camera) {
 function ffmpegOptionsFromBody(body) {
   const o = {};
   if (body.ffmpeg_rtsp_transport != null) o.rtsp_transport = body.ffmpeg_rtsp_transport;
-  if (body.ffmpeg_reconnect != null) o.reconnect = body.ffmpeg_reconnect === '' ? DEFAULT_FFMPEG_OPTIONS.reconnect : Number(body.ffmpeg_reconnect) || 1;
-  if (body.ffmpeg_reconnect_streamed != null) o.reconnect_streamed = body.ffmpeg_reconnect_streamed === '' ? DEFAULT_FFMPEG_OPTIONS.reconnect_streamed : Number(body.ffmpeg_reconnect_streamed) || 1;
-  if (body.ffmpeg_reconnect_delay_max != null) o.reconnect_delay_max = body.ffmpeg_reconnect_delay_max === '' ? DEFAULT_FFMPEG_OPTIONS.reconnect_delay_max : Number(body.ffmpeg_reconnect_delay_max) || 5;
   if (body.ffmpeg_fflags != null) o.fflags = body.ffmpeg_fflags;
   if (body.ffmpeg_max_delay != null) o.max_delay = body.ffmpeg_max_delay === '' ? DEFAULT_FFMPEG_OPTIONS.max_delay : Number(body.ffmpeg_max_delay) || 2;
   if (body.ffmpeg_flags != null) o.flags = body.ffmpeg_flags;
@@ -55,6 +52,11 @@ function ffmpegOptionsFromBody(body) {
   return o;
 }
 
+function assertValidCustomFfmpegOptions(opts) {
+  const { errors } = streamManager.validateCustomFfmpegOptions(opts);
+  if (errors.length > 0) throw new Error('Invalid ffmpeg options: ' + errors.join('; '));
+}
+
 function ffmpegFormSection(opts) {
   const v = (key) => escapeHtml(String(opts[key] ?? ''));
   return `
@@ -68,14 +70,6 @@ function ffmpegFormSection(opts) {
               <option value="udp" ${opts.rtsp_transport === 'udp' ? 'selected' : ''}>UDP</option>
               <option value="http" ${opts.rtsp_transport === 'http' ? 'selected' : ''}>HTTP</option>
             </select>
-          </div>
-          <div class="form-field">
-            <label for="ffmpeg-reconnect">Reconnect</label>
-            <input type="number" id="ffmpeg-reconnect" name="ffmpeg_reconnect" value="${v('reconnect')}" min="0" placeholder="1">
-          </div>
-          <div class="form-field">
-            <label for="ffmpeg-reconnect-delay-max">Reconnect delay (s)</label>
-            <input type="number" id="ffmpeg-reconnect-delay-max" name="ffmpeg_reconnect_delay_max" value="${v('reconnect_delay_max')}" min="0" placeholder="5">
           </div>
         </div>
         <div class="form-grid-3">
@@ -171,10 +165,6 @@ function ffmpegFormSection(opts) {
         </div>
         <h3 class="ffmpeg-subsection-title">Advanced</h3>
         <div class="form-grid-3">
-          <div class="form-field">
-            <label for="ffmpeg-reconnect-streamed">Reconnect streamed</label>
-            <input type="number" id="ffmpeg-reconnect-streamed" name="ffmpeg_reconnect_streamed" value="${v('reconnect_streamed')}" min="0" placeholder="1">
-          </div>
           <div class="form-field">
             <label for="ffmpeg-tune">Tune</label>
             <input type="text" id="ffmpeg-tune" name="ffmpeg_tune" value="${v('tune')}" placeholder="zerolatency">
@@ -707,6 +697,7 @@ router.post('/cameras', requireLogin, verifyCsrf, auditLog('camera.create'), asy
   const onvifPort = parseInt(onvif_port) || 8899;
   const ffmpegOpts = { ...DEFAULT_FFMPEG_OPTIONS, ...ffmpegOptionsFromBody(req.body || {}) };
   try {
+    assertValidCustomFfmpegOptions(ffmpegOpts);
     const id = db.createCamera(
       display_name.trim(),
       rtsp_host.trim(),
@@ -904,6 +895,7 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
   const timeSyncEnabled = time_sync_enabled === '1';
   const timeSyncInterval = Math.min(168, Math.max(1, parseInt(time_sync_interval_hours) || 24));
   try {
+    assertValidCustomFfmpegOptions(ffmpegOpts);
     db.updateCamera(
       id,
       display_name.trim(),
@@ -932,6 +924,7 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
 router.post('/cameras/:id/delete', requireLogin, verifyCsrf, auditLog('camera.delete'), async (req, res) => {
   const id = Number(req.params.id);
   if (db.getCamera(id)) {
+    timeSyncScheduler.stopTimeSync(id);
     await streamManager.stopStream(id);
     db.deleteCamera(id);
   }
@@ -1144,7 +1137,7 @@ router.post('/cameras/:id/settings', requireLogin, verifyCsrf, auditLog('camera.
       if (body.saturation !== undefined && body.saturation !== '') imagingUpdates.Saturation = parseFloat(body.saturation);
       if (body.sharpness !== undefined && body.sharpness !== '') imagingUpdates.Sharpness = parseFloat(body.sharpness);
       if (Object.keys(imagingUpdates).length > 0) {
-        await onvif.setImagingSettings(cam, imagingUpdates).catch(() => {});
+        await onvif.setImagingSettings(cam, imagingUpdates);
       }
     }
     
@@ -1157,7 +1150,7 @@ router.post('/cameras/:id/settings', requireLogin, verifyCsrf, auditLog('camera.
       if (body.video_quality !== undefined && body.video_quality !== '') videoUpdates.Quality = parseInt(body.video_quality);
       if (body.video_iframe !== undefined && body.video_iframe !== '') videoUpdates.GOP = parseInt(body.video_iframe);
       if (Object.keys(videoUpdates).length > 0) {
-        await onvif.setVideoEncoderConfig(cam, videoUpdates).catch(() => {});
+        await onvif.setVideoEncoderConfig(cam, videoUpdates);
       }
     }
     
