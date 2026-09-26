@@ -17,6 +17,11 @@ services:
       # - SESSION_SECRET=your-random-secret
     volumes:
       - birdcam-data:/app/data
+    # HLS segments are ephemeral and rewritten every few seconds; keep them in
+    # RAM instead of the container's writable layer. 256m is ample for several
+    # cameras (only the last few segments per camera are kept).
+    tmpfs:
+      - /app/hls:size=256m
     restart: unless-stopped
 
 volumes:

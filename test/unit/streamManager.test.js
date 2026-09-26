@@ -121,9 +121,12 @@ describe('streamManager.buildFfmpegArgs', () => {
     assert.ok(args[idx + 1].includes('%03d.ts'));
   });
 
-  it('includes stimeout for RTSP connection', () => {
+  it('includes an RTSP socket timeout (-timeout on FFmpeg 5+, -stimeout on 4.x)', () => {
     const args = buildFfmpegArgs(rtspUrl, outBase, {});
-    assert.ok(args.includes('-stimeout'));
+    const idx = args.findIndex((a) => a === '-timeout' || a === '-stimeout');
+    assert.ok(idx !== -1, 'expected -timeout or -stimeout');
+    assert.strictEqual(args[idx + 1], '5000000');
+    assert.ok(idx < args.indexOf('-i'), 'timeout must be an input option (before -i)');
   });
 
   it('includes rtsp_transport option', () => {
