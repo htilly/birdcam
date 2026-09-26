@@ -216,6 +216,22 @@
 .admin-table tr:last-child td { border-bottom: none; }
 .admin-table tr:hover td { background: #f7fafc; }
 
+/* --- Motion preset select --- */
+.motion-preset-select {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 2px solid #e2e8f0;
+  border-radius: var(--radius-sm);
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: #fff;
+  cursor: pointer;
+}
+.motion-preset-select:focus {
+  outline: none;
+  border-color: var(--leaf);
+}
+
 /* --- Forms --- */
 .admin-form { margin-top: 0.5rem; }
 .admin-form label {

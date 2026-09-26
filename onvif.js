@@ -12,19 +12,26 @@ async function createCam(host, port, username, password) {
   return cam;
 }
 
+async function withOnvifSession(host, port, username, password, fn) {
+  const cam = await createCam(host, port, username, password);
+  try {
+    return await fn(cam);
+  } finally {
+    // Cam doesn't have explicit close, but we can ignore this
+  }
+}
+
 async function getImagingSettings(cam) {
   try {
     const videoSources = cam.videoSources;
     if (!videoSources || videoSources.length === 0) return null;
     const token = videoSources[0].$.token;
-    // onvif lib takes { token } and returns camelCase keys
-    const settings = await cam.getImagingSettings({ token });
-    if (!settings) return null;
+    const settings = await cam.getImagingSettings({ videoSourceToken: token });
     return {
-      Brightness: settings.brightness,
-      Contrast: settings.contrast,
-      Saturation: settings.colorSaturation,
-      Sharpness: settings.sharpness,
+      Brightness: settings.Brightness,
+      Contrast: settings.Contrast,
+      Saturation: settings.ColorSaturation,
+      Sharpness: settings.Sharpness,
     };
   } catch (err) {
     return null;
@@ -37,19 +44,16 @@ async function setImagingSettings(cam, settings) {
     if (!videoSources || videoSources.length === 0) return false;
     const token = videoSources[0].$.token;
     
-    // onvif lib expects { token, brightness, colorSaturation, contrast, sharpness } at the top level.
-    // It skips falsy values, so pass numbers as strings to allow 0.
-    const toValue = (v) => {
-      const n = parseFloat(v);
-      return Number.isFinite(n) ? String(n) : undefined;
-    };
-    const imagingSettings = { token };
-    if (settings.Brightness !== undefined) imagingSettings.brightness = toValue(settings.Brightness);
-    if (settings.Contrast !== undefined) imagingSettings.contrast = toValue(settings.Contrast);
-    if (settings.Saturation !== undefined) imagingSettings.colorSaturation = toValue(settings.Saturation);
-    if (settings.Sharpness !== undefined) imagingSettings.sharpness = toValue(settings.Sharpness);
-
-    await cam.setImagingSettings(imagingSettings);
+    const imagingSettings = {};
+    if (settings.Brightness !== undefined) imagingSettings.Brightness = parseFloat(settings.Brightness);
+    if (settings.Contrast !== undefined) imagingSettings.Contrast = parseFloat(settings.Contrast);
+    if (settings.Saturation !== undefined) imagingSettings.ColorSaturation = parseFloat(settings.Saturation);
+    if (settings.Sharpness !== undefined) imagingSettings.Sharpness = parseFloat(settings.Sharpness);
+    
+    await cam.setImagingSettings({
+      videoSourceToken: token,
+      ImagingSettings: imagingSettings,
+    });
     return true;
   } catch (err) {
     throw new Error(`Failed to set imaging settings: ${err.message}`);
@@ -135,11 +139,10 @@ async function getSystemDateAndTime(cam) {
 
 async function setSystemDateAndTime(cam, date) {
   try {
-    // onvif lib sends dateTime as UTCDateTime (it reads the Date via getUTC*)
     await cam.setSystemDateAndTime({
       dateTimeType: 'Manual',
-      dateTime: date,
       daylightSavings: false,
+      dateTime: date,
     });
     return true;
   } catch (err) {
@@ -173,6 +176,7 @@ async function reboot(cam) {
 
 module.exports = {
   createCam,
+  withOnvifSession,
   getImagingSettings,
   setImagingSettings,
   getVideoEncoderConfig,

@@ -81,12 +81,47 @@ def get_first_camera_rtsp_from_db():
     return None, None
 
 
+def get_motion_settings_from_db(camera_id: int) -> dict:
+    """Return motion detection settings for a camera from DB, or defaults."""
+    settings = {
+        "min_area": config.MIN_CONTOUR_AREA,
+        "threshold_fraction": config.MOTION_THRESHOLD_FRACTION,
+        "blur_kernel": config.BLUR_KERNEL,
+        "cooldown_sec": config.NOTIFICATION_COOLDOWN_SEC,
+        "recording_cooldown_sec": config.RECORDING_COOLDOWN_SEC,
+    }
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=2)
+        cur = conn.cursor()
+        row = cur.execute(
+            "SELECT motion_min_area, motion_threshold, motion_blur_kernel, motion_cooldown_sec FROM cameras WHERE id = ?",
+            (camera_id,),
+        ).fetchone()
+        conn.close()
+        if row:
+            if row[0] is not None:
+                settings["min_area"] = int(row[0])
+            if row[1] is not None:
+                settings["threshold_fraction"] = float(row[1])
+            if row[2] is not None:
+                k = int(row[2])
+                if k % 2 == 0:
+                    k += 1
+                settings["blur_kernel"] = k
+            if row[3] is not None:
+                settings["recording_cooldown_sec"] = int(row[3])
+    except Exception as e:
+        logger.warning(f"Could not read motion settings from DB: {e}")
+    return settings
+
+
 # Mutable config (can be updated by clients at runtime)
 runtime_config = {
     "min_area": config.MIN_CONTOUR_AREA,
     "threshold_fraction": config.MOTION_THRESHOLD_FRACTION,
     "cooldown_sec": config.NOTIFICATION_COOLDOWN_SEC,
     "recording_cooldown_sec": config.RECORDING_COOLDOWN_SEC,
+    "blur_kernel": config.BLUR_KERNEL,
 }
 
 
@@ -267,8 +302,9 @@ class MotionDetector:
         # region size at any frame/processing resolution: at 320px one processing
         # pixel is 4 reference px².
         self.area_to_ref = (config.REFERENCE_WIDTH / proc_w) ** 2
-        k = _scaled_odd(config.BLUR_KERNEL, proc_w)
-        self.blur_ksize = (k, k)
+        self.proc_w = proc_w
+        self._blur_cache = {}
+        k = self.blur_for(config.BLUR_KERNEL)[0]
         m = _scaled_odd(config.MORPH_KERNEL, proc_w)
         self.morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (m, m))
         self._frame_size = (w, h)
@@ -276,6 +312,15 @@ class MotionDetector:
             f"Processing {w}x{h} frames at {proc_w}x{proc_h} "
             f"(blur {k}x{k}, morph {m}x{m})"
         )
+
+
+    def blur_for(self, ref_kernel) -> tuple:
+        """Gaussian kernel size for a blur given in reference (640-wide) px."""
+        ksize = self._blur_cache.get(ref_kernel)
+        if ksize is None:
+            k = _scaled_odd(int(ref_kernel), self.proc_w)
+            ksize = self._blur_cache[ref_kernel] = (k, k)
+        return ksize
 
 
 def build_detector() -> MotionDetector:
@@ -298,9 +343,11 @@ def process_frame(frame, detector: MotionDetector) -> tuple[bool, list, int, int
     # Resize for processing speed (only when larger than PROCESS_WIDTH)
     small = cv2.resize(frame, detector.resize_to) if detector.resize_to else frame
 
-    # Convert to grayscale (unless already gray), blur to reduce noise
+    # Convert to grayscale (unless already gray), blur to reduce noise.
+    # blur_kernel (per-camera setting) is in reference 640-wide px, like min_area.
     gray = small if small.ndim == 2 else cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, detector.blur_ksize, 0)
+    blur_ksize = detector.blur_for(runtime_config.get("blur_kernel", config.BLUR_KERNEL))
+    blurred = cv2.GaussianBlur(gray, blur_ksize, 0)
 
     # Background subtraction
     fg_mask = detector.bg_subtractor.apply(blurred)
