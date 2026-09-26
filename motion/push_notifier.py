@@ -5,9 +5,11 @@ Loads subscriptions from a JSON file and sends push messages to all subscribers.
 Invalid/expired subscriptions are automatically removed.
 """
 
+import ipaddress
 import json
 import os
 import logging
+from urllib.parse import urlparse
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -35,18 +37,55 @@ def save_subscriptions(path: str, subscriptions: list):
         logger.error(f"Failed to save subscriptions to {path}: {e}")
 
 
+MAX_SUBSCRIPTIONS = 500
+MAX_ENDPOINT_LEN = 2048
+
+
+def _is_valid_subscription(subscription: dict) -> bool:
+    """Subscriptions arrive from anonymous browsers, and we later POST to the
+    endpoint — only accept well-formed https push endpoints on public hosts."""
+    endpoint = subscription.get('endpoint')
+    keys = subscription.get('keys')
+    if not isinstance(endpoint, str) or len(endpoint) > MAX_ENDPOINT_LEN:
+        return False
+    if not isinstance(keys, dict) or not isinstance(keys.get('p256dh'), str) or not isinstance(keys.get('auth'), str):
+        return False
+    try:
+        parsed = urlparse(endpoint)
+    except ValueError:
+        return False
+    if parsed.scheme != 'https' or not parsed.hostname:
+        return False
+    host = parsed.hostname
+    try:
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:
+            return False
+    except ValueError:
+        if host == 'localhost' or host.endswith('.localhost') or '.' not in host:
+            return False
+    return True
+
+
 def add_subscription(path: str, subscription: dict):
     """Add or update a push subscription (keyed by endpoint URL)."""
+    if not _is_valid_subscription(subscription):
+        logger.warning("Rejecting invalid push subscription.")
+        return False
     subs = load_subscriptions(path)
-    endpoint = subscription.get('endpoint')
-    if not endpoint:
-        logger.warning("Subscription missing endpoint, ignoring.")
-        return
+    endpoint = subscription['endpoint']
     # Remove existing subscription with same endpoint (update)
     subs = [s for s in subs if s.get('endpoint') != endpoint]
-    subs.append(subscription)
+    if len(subs) >= MAX_SUBSCRIPTIONS:
+        logger.warning(f"Subscription limit ({MAX_SUBSCRIPTIONS}) reached, ignoring.")
+        return False
+    subs.append({'endpoint': endpoint, 'keys': {
+        'p256dh': subscription['keys']['p256dh'],
+        'auth': subscription['keys']['auth'],
+    }})
     save_subscriptions(path, subs)
     logger.info(f"Saved subscription for endpoint: {endpoint[:60]}...")
+    return True
 
 
 def remove_subscription(path: str, endpoint: str):

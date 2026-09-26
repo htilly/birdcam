@@ -29,6 +29,7 @@ import signal
 import struct
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timezone
 
 import cv2
@@ -105,37 +106,59 @@ async def send_to_relay(message: dict):
         _relay_ws = None
 
 
+def _clamp(value, lo, hi):
+    if value != value:  # NaN
+        raise ValueError("NaN")
+    return max(lo, min(hi, value))
+
+
+def _relay_url_with_token(url: str) -> str:
+    """Append MOTION_DETECTOR_TOKEN so the Node server accepts us as the detector."""
+    token = os.environ.get("MOTION_DETECTOR_TOKEN", "")
+    if not token or "token=" in url:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}token={urllib.parse.quote(token)}"
+
+
 async def handle_relay_message(raw: str):
     """Handle messages forwarded from browser clients via the Node.js relay."""
     try:
         msg = json.loads(raw)
     except json.JSONDecodeError:
         return
+    if not isinstance(msg, dict):
+        return
 
     msg_type = msg.get("type")
 
     if msg_type == "config_update":
-        if "min_area" in msg:
-            runtime_config["min_area"] = max(100, int(msg["min_area"]))
-        if "threshold_fraction" in msg:
-            runtime_config["threshold_fraction"] = max(
-                0.0001, min(1.0, float(msg["threshold_fraction"]))
-            )
-        if "cooldown_sec" in msg:
-            runtime_config["cooldown_sec"] = max(5, int(msg["cooldown_sec"]))
-        if "recording_cooldown_sec" in msg:
-            runtime_config["recording_cooldown_sec"] = max(
-                1, int(msg["recording_cooldown_sec"])
-            )
+        # Validate everything before applying, so one bad field can't leave a
+        # half-applied config or raise out of the relay loop.
+        try:
+            updates = {}
+            if "min_area" in msg:
+                updates["min_area"] = _clamp(int(msg["min_area"]), 100, 200_000)
+            if "threshold_fraction" in msg:
+                updates["threshold_fraction"] = _clamp(float(msg["threshold_fraction"]), 0.0001, 1.0)
+            if "cooldown_sec" in msg:
+                updates["cooldown_sec"] = _clamp(int(msg["cooldown_sec"]), 5, 3600)
+            if "recording_cooldown_sec" in msg:
+                updates["recording_cooldown_sec"] = _clamp(int(msg["recording_cooldown_sec"]), 1, 60)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning("Ignoring invalid config_update from browser")
+            return
+        runtime_config.update(updates)
         logger.info(f"Config updated by browser: {runtime_config}")
         await send_to_relay({"type": "config", **runtime_config})
 
     elif msg_type == "subscribe":
         subscription = msg.get("subscription")
         if subscription and isinstance(subscription, dict):
-            push_notifier.add_subscription(config.SUBSCRIPTIONS_FILE, subscription)
-            await send_to_relay({"type": "subscribed", "ok": True})
-            logger.info("Push subscription saved.")
+            ok = push_notifier.add_subscription(config.SUBSCRIPTIONS_FILE, subscription)
+            await send_to_relay({"type": "subscribed", "ok": bool(ok)})
+            if ok:
+                logger.info("Push subscription saved.")
 
     elif msg_type == "unsubscribe":
         endpoint = msg.get("endpoint")
@@ -157,7 +180,9 @@ async def relay_connection_loop(stop_event: asyncio.Event):
         url = config.RELAY_URL
         try:
             logger.info(f"Connecting to relay at {url}")
-            async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            async with websockets.connect(
+                _relay_url_with_token(url), ping_interval=20, ping_timeout=10
+            ) as ws:
                 _relay_ws = ws
                 attempt = 0
                 logger.info("Connected to relay.")
@@ -165,7 +190,11 @@ async def relay_connection_loop(stop_event: asyncio.Event):
                 async for raw in ws:
                     if stop_event.is_set():
                         break
-                    await handle_relay_message(raw)
+                    try:
+                        await handle_relay_message(raw)
+                    except Exception as e:
+                        # A single bad message must not drop the relay connection.
+                        logger.warning(f"Error handling relay message: {e}")
         except (websockets.exceptions.ConnectionClosed, OSError) as e:
             logger.warning(f"Relay connection lost: {e}")
         except Exception as e:

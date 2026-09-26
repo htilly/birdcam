@@ -1,9 +1,17 @@
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const streamManager = require('./streamManager');
 const db = require('./db');
 
 let motionProcess = null;
 let isShuttingDown = false;
+
+// Per-process secret the spawned motion.py presents when connecting to /motion-ws
+// as the detector. Without it, any client could claim role=detector.
+const detectorToken = process.env.MOTION_DETECTOR_TOKEN || crypto.randomBytes(32).toString('hex');
+function getDetectorToken() {
+  return detectorToken;
+}
 
 /**
  * Start motion detector that reads frames from the ffmpeg HLS stream.
@@ -57,6 +65,7 @@ async function startMotionDetector() {
       MOTION_CAMERA_ID: String(cameraId),
       VAPID_PRIVATE_KEY: vapidPrivateKey,
       VAPID_PUBLIC_KEY:  vapidPublicKey,
+      MOTION_DETECTOR_TOKEN: detectorToken,
     },
   });
 
@@ -92,12 +101,14 @@ async function startMotionDetector() {
 
 function stopMotionDetector() {
   isShuttingDown = true;
-  if (motionProcess && !motionProcess.killed) {
+  const proc = motionProcess;
+  if (proc && proc.exitCode === null && proc.signalCode === null) {
     console.log('[motion-manager] Stopping motion detector');
-    motionProcess.kill('SIGTERM');
+    proc.kill('SIGTERM');
+    // proc.killed is already true once SIGTERM is sent, so check real exit state.
     setTimeout(() => {
-      if (motionProcess && !motionProcess.killed) {
-        motionProcess.kill('SIGKILL');
+      if (proc.exitCode === null && proc.signalCode === null) {
+        proc.kill('SIGKILL');
       }
     }, 5000);
   }
@@ -106,4 +117,5 @@ function stopMotionDetector() {
 module.exports = {
   startMotionDetector,
   stopMotionDetector,
+  getDetectorToken,
 };

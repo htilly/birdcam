@@ -2585,6 +2585,12 @@ router.post('/webauthn/login-verify', async (req, res) => {
       return res.status(400).json({ error: 'Credential not found' });
     }
 
+    // When login-options was requested for a specific user, the credential must belong
+    // to that user — otherwise a key registered to user B could sign in as user A.
+    if (userId && credential.user_id !== userId) {
+      return res.status(400).json({ error: 'Authentication verification failed' });
+    }
+
     // For passwordless auth, userId may not be in session - use credential's user_id
     const effectiveUserId = userId || credential.user_id;
 

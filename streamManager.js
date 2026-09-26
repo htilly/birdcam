@@ -164,17 +164,22 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
   return args;
 }
 
+// Maps/Sets below are keyed by numeric camera id; callers may pass "1" (from URLs)
+// or 1 (from the DB), and a mismatch would spawn a duplicate ffmpeg for the same camera.
+function normalizeId(cameraId) {
+  const n = Number(cameraId);
+  return Number.isFinite(n) ? n : cameraId;
+}
+
 async function startStream(cameraId, camera, enableMotionFrames = false) {
+  cameraId = normalizeId(cameraId);
   const rtspUrl = typeof camera === 'string' ? camera : camera.rtsp_url;
   if (!db.validateRtspUrl(rtspUrl)) {
     console.error(`Camera ${cameraId}: refusing to start — invalid RTSP URL`);
     return null;
   }
 
-  if (enableMotionFrames) {
-    motionEnabled.add(cameraId);
-  } else if (!motionEnabled.has(cameraId)) {
-  }
+  if (enableMotionFrames) motionEnabled.add(cameraId);
   const shouldEnableMotion = motionEnabled.has(cameraId);
 
   await stopStream(cameraId);
@@ -230,6 +235,7 @@ async function startStream(cameraId, camera, enableMotionFrames = false) {
  * preventing multiple ffmpeg instances from writing to the same HLS files simultaneously.
  */
 async function stopStream(cameraId) {
+  cameraId = normalizeId(cameraId);
   const child = processes.get(cameraId);
   // (#11) Delete HLS files for this camera asynchronously to avoid blocking the event loop
   const prefix = `cam-${cameraId}`;
@@ -287,20 +293,20 @@ async function startAll({ motionCameraId = null } = {}) {
 }
 
 function isRunning(cameraId) {
-  const p = processes.get(cameraId);
+  const p = processes.get(normalizeId(cameraId));
   return p && !p.killed;
 }
 
 function getProcess(cameraId) {
-  return processes.get(cameraId);
+  return processes.get(normalizeId(cameraId));
 }
 
 function getLogs(cameraId) {
-  return logs.get(cameraId) || [];
+  return logs.get(normalizeId(cameraId)) || [];
 }
 
 function getStreamInfo(cameraId) {
-  const camLog = logs.get(cameraId) || [];
+  const camLog = logs.get(normalizeId(cameraId)) || [];
   const infoLines = camLog.filter((l) =>
     /Stream #\d|Stream mapping|->|Input #|Output #|profile |libx264|fps=/.test(l)
   );

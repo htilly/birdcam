@@ -59,6 +59,33 @@ describe('middleware/audit.auditLog', { concurrency: false }, () => {
     assert.strictEqual(logs[0].request_id, 'req-test-123');
   });
 
+  it('redacts secret fields in bodies of non-password actions', () => {
+    const req = createMockRequest({
+      session: {},
+      method: 'POST',
+      path: '/admin/cameras',
+      body: {
+        display_name: 'Cam',
+        rtsp_password: 'rtsp-secret',
+        onvif_password: 'onvif-secret',
+        password: 'user-secret',
+        _csrf: 'csrf-token',
+        nested: { api_token: 'tok' },
+      },
+    });
+    auditLog('camera.create')(req, createMockResponse(), () => {});
+
+    const logs = originalDb.getAuditLogs(10);
+    const details = JSON.parse(logs[0].details);
+    assert.strictEqual(details.body.display_name, 'Cam');
+    assert.strictEqual(details.body.rtsp_password, '[REDACTED]');
+    assert.strictEqual(details.body.onvif_password, '[REDACTED]');
+    assert.strictEqual(details.body.password, '[REDACTED]');
+    assert.strictEqual(details.body._csrf, '[REDACTED]');
+    assert.strictEqual(details.body.nested.api_token, '[REDACTED]');
+    assert.ok(!logs[0].details.includes('secret'));
+  });
+
   it('logs audit entry without user for unauthenticated actions', () => {
     const req = createMockRequest({
       session: {},

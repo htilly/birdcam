@@ -29,6 +29,8 @@ function getDb() {
     fs.mkdirSync(dataDir, { recursive: true });
     db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL'); // safe with WAL, far fewer fsyncs
+    db.pragma('busy_timeout = 5000'); // motion.py also opens this DB
     init();
   }
   return db;
