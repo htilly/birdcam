@@ -811,6 +811,13 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
           <section class="form-card form-card-compact">
             <h2 class="form-card-title">Quick Actions</h2>
             <div class="action-list">
+              <a href="/admin/cameras/${c.id}/motion" class="action-btn action-link">
+                <span class="action-icon">&#x1F4FA;</span>
+                <span class="action-text">
+                  <strong>Motion Detection</strong>
+                  <small>Adjust sensitivity settings</small>
+                </span>
+              </a>
               <form method="post" action="/admin/cameras/${c.id}/sync-time" class="action-form">
                 ${csrfField(req)}
                 <button type="submit" class="action-btn">
@@ -887,6 +894,101 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
   `));
 });
 
+// Motion Detection settings page
+router.get('/cameras/:id/motion', requireLogin, (req, res) => {
+  const id = Number(req.params.id);
+  const c = db.getCamera(id);
+  if (!c) return res.redirect('/admin');
+  
+  res.send(layout('Motion Detection', nav('cameras', req), `
+    ${breadcrumb({ label: 'Cameras', href: '/admin' }, { label: escapeHtml(c.display_name), href: '/admin/cameras/' + id + '/edit' }, { label: 'Motion Detection' })}
+    <h1>Motion Detection</h1>
+    <p style="color:#718096;margin-bottom:1.5rem;">Adjust sensitivity for <strong>${escapeHtml(c.display_name)}</strong></p>
+    ${req.query.msg ? `<div class="admin-msg admin-msg-ok">${escapeHtml(req.query.msg)}</div>` : ''}
+    <form method="post" action="/admin/cameras/${id}/motion" class="admin-form">
+      ${csrfField(req)}
+      <section class="form-card">
+        <h2 class="form-card-title">Preset</h2>
+        <div class="form-field">
+          <label for="motion-preset">Select preset</label>
+          <select id="motion-preset" class="motion-preset-select">
+            <option value="">Custom</option>
+            <option value="very-sensitive">Very Sensitive (small birds, quick movements)</option>
+            <option value="sensitive">Sensitive (normal bird activity)</option>
+            <option value="balanced">Balanced (recommended)</option>
+            <option value="less-sensitive">Less Sensitive (reduce false positives)</option>
+          </select>
+        </div>
+      </section>
+      <section class="form-card">
+        <h2 class="form-card-title">Advanced Settings</h2>
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label for="motion-min-area">Min area (pixels²)</label>
+            <input type="number" id="motion-min-area" name="motion_min_area" value="${c.motion_min_area || ''}" min="100" max="50000" placeholder="1500">
+            <span class="form-field-hint">Higher = less sensitive (ignore small movements)</span>
+          </div>
+          <div class="form-field">
+            <label for="motion-threshold">Threshold</label>
+            <input type="number" id="motion-threshold" name="motion_threshold" value="${c.motion_threshold || ''}" min="0.001" max="1" step="0.001" placeholder="0.005">
+            <span class="form-field-hint">Fraction of frame (0.005 = 0.5%)</span>
+          </div>
+        </div>
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label for="motion-blur">Blur kernel</label>
+            <input type="number" id="motion-blur" name="motion_blur_kernel" value="${c.motion_blur_kernel || ''}" min="3" max="51" step="2" placeholder="21">
+            <span class="form-field-hint">Higher = more noise reduction</span>
+          </div>
+          <div class="form-field">
+            <label for="motion-cooldown">Cooldown (sec)</label>
+            <input type="number" id="motion-cooldown" name="motion_cooldown_sec" value="${c.motion_cooldown_sec || ''}" min="1" max="300" placeholder="3">
+            <span class="form-field-hint">Time without motion before recording stops</span>
+          </div>
+        </div>
+      </section>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save settings</button>
+        <a href="/admin/cameras/${id}/edit" class="btn btn-ghost">Back to camera</a>
+      </div>
+    </form>
+    <script src="/admin/motion-presets.js"></script>
+  `));
+});
+
+router.post('/cameras/:id/motion', requireLogin, verifyCsrf, auditLog('camera.motion'), (req, res) => {
+  const id = Number(req.params.id);
+  const c = db.getCamera(id);
+  if (!c) return res.redirect('/admin');
+  
+  const { motion_min_area, motion_threshold, motion_blur_kernel, motion_cooldown_sec } = req.body || {};
+  const motionSettings = {
+    min_area: motion_min_area ? Math.max(100, Math.min(50000, parseInt(motion_min_area))) : null,
+    threshold: motion_threshold ? Math.max(0.001, Math.min(1, parseFloat(motion_threshold))) : null,
+    blur_kernel: motion_blur_kernel ? Math.max(3, Math.min(51, parseInt(motion_blur_kernel))) : null,
+    cooldown_sec: motion_cooldown_sec ? Math.max(1, Math.min(300, parseInt(motion_cooldown_sec))) : null,
+  };
+  
+  db.updateCamera(
+    id,
+    c.display_name,
+    c.rtsp_host,
+    c.rtsp_port,
+    c.rtsp_path,
+    c.rtsp_username,
+    c.rtsp_password,
+    c.ffmpeg_options,
+    c.onvif_port,
+    c.onvif_username,
+    c.onvif_password,
+    c.time_sync_enabled,
+    c.time_sync_interval_hours,
+    motionSettings
+  );
+  
+  res.redirect(`/admin/cameras/${id}/motion?msg=` + encodeURIComponent('Motion settings saved'));
+});
+
 router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'), async (req, res) => {
   const id = Number(req.params.id);
   const c = db.getCamera(id);
@@ -900,6 +1002,7 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
   const ffmpegOpts = { ...DEFAULT_FFMPEG_OPTIONS, ...ffmpegOptionsFromBody(req.body || {}) };
   const timeSyncEnabled = time_sync_enabled === '1';
   const timeSyncInterval = Math.min(168, Math.max(1, parseInt(time_sync_interval_hours) || 24));
+  
   try {
     db.updateCamera(
       id,
@@ -914,13 +1017,14 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
       (onvif_username || '').trim(),
       (onvifPw || '').trim(),
       timeSyncEnabled,
-      timeSyncInterval
+      timeSyncInterval,
+      null
     );
     timeSyncScheduler.restartScheduler(id);
     await streamManager.stopStream(id);
     const updated = db.getCamera(id);
     await streamManager.startStream(id, updated);
-    res.redirect('/admin');
+    res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Camera settings saved'));
   } catch (err) {
     res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent(err.message));
   }

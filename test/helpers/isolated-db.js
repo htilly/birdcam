@@ -20,6 +20,9 @@ function createIsolatedTestDb() {
       rtsp_path TEXT NOT NULL DEFAULT '',
       rtsp_username TEXT NOT NULL DEFAULT '',
       rtsp_password TEXT NOT NULL DEFAULT '',
+      onvif_port INTEGER NOT NULL DEFAULT 8899,
+      onvif_username TEXT NOT NULL DEFAULT '',
+      onvif_password TEXT NOT NULL DEFAULT '',
       ffmpeg_options TEXT DEFAULT '{}',
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -166,33 +169,47 @@ function createIsolatedTestDb() {
       return stmt('getCamera', 'SELECT * FROM cameras WHERE id = ?').get(id);
     },
     
-    createCamera(display_name, host, port, urlPath, username, password, ffmpegOptionsJson = '{}') {
+    createCamera(display_name, host, port, urlPath, username, password, ffmpegOptionsJson = '{}', onvifPort = 8899, onvifUsername = '', onvifPassword = '') {
       const rtsp_url = this.buildRtspUrl(host, port, urlPath, username, password);
       if (!this.validateRtspUrl(rtsp_url)) {
         throw new Error('Invalid RTSP URL — only rtsp:// URLs are allowed');
       }
       const opts = typeof ffmpegOptionsJson === 'string' ? ffmpegOptionsJson : JSON.stringify(ffmpegOptionsJson || {});
       const r = db.prepare(
-        "INSERT INTO cameras (display_name, rtsp_url, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, ffmpeg_options, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))"
-      ).run(display_name, rtsp_url, host, port, urlPath, username, password, opts);
+        "INSERT INTO cameras (display_name, rtsp_url, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, onvif_port, onvif_username, onvif_password, ffmpeg_options, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))"
+      ).run(display_name, rtsp_url, host, port, urlPath, username, password, onvifPort || 8899, onvifUsername || '', onvifPassword || '', opts);
       return r.lastInsertRowid;
     },
     
-    updateCamera(id, display_name, host, port, urlPath, username, password, ffmpegOptionsJson = null) {
+    updateCamera(id, display_name, host, port, urlPath, username, password, ffmpegOptionsJson = null, onvifPort = null, onvifUsername = null, onvifPassword = null) {
       const rtsp_url = this.buildRtspUrl(host, port, urlPath, username, password);
       if (!this.validateRtspUrl(rtsp_url)) {
         throw new Error('Invalid RTSP URL — only rtsp:// URLs are allowed');
       }
+      const cam = this.getCamera(id);
+      const finalOnvifPort = onvifPort !== null ? onvifPort : (cam.onvif_port || 8899);
+      const finalOnvifUsername = onvifUsername !== null ? onvifUsername : (cam.onvif_username || '');
+      const finalOnvifPassword = onvifPassword !== null ? onvifPassword : (cam.onvif_password || '');
+      
       if (ffmpegOptionsJson !== null && ffmpegOptionsJson !== undefined) {
         const opts = typeof ffmpegOptionsJson === 'string' ? ffmpegOptionsJson : JSON.stringify(ffmpegOptionsJson || {});
         db.prepare(
-          "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, ffmpeg_options = ?, updated_at = datetime('now') WHERE id = ?"
-        ).run(display_name, rtsp_url, host, port, urlPath, username, password, opts, id);
+          "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, ffmpeg_options = ?, updated_at = datetime('now') WHERE id = ?"
+        ).run(display_name, rtsp_url, host, port, urlPath, username, password, finalOnvifPort, finalOnvifUsername, finalOnvifPassword, opts, id);
       } else {
         db.prepare(
-          "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, updated_at = datetime('now') WHERE id = ?"
-        ).run(display_name, rtsp_url, host, port, urlPath, username, password, id);
+          "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, updated_at = datetime('now') WHERE id = ?"
+        ).run(display_name, rtsp_url, host, port, urlPath, username, password, finalOnvifPort, finalOnvifUsername, finalOnvifPassword, id);
       }
+    },
+    
+    getOnvifCredentials(camera) {
+      if (!camera) return { username: '', password: '', port: 8899 };
+      return {
+        username: camera.onvif_username || camera.rtsp_username || 'admin',
+        password: camera.onvif_password || camera.rtsp_password || '',
+        port: camera.onvif_port || 8899,
+      };
     },
     
     deleteCamera(id) {

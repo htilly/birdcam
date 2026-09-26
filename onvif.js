@@ -139,21 +139,11 @@ async function getSystemDateAndTime(cam) {
 
 async function setSystemDateAndTime(cam, date) {
   try {
-    const dateTime = {
-      DateTime: {
-        Date: {
-          Year: date.getFullYear(),
-          Month: date.getMonth() + 1,
-          Day: date.getDate(),
-        },
-        Time: {
-          Hour: date.getHours(),
-          Minute: date.getMinutes(),
-          Second: date.getSeconds(),
-        },
-      },
-    };
-    await cam.setSystemDateAndTime(dateTime);
+    await cam.setSystemDateAndTime({
+      dateTimeType: 'Manual',
+      daylightSavings: false,
+      dateTime: date,
+    });
     return true;
   } catch (err) {
     throw new Error(`Failed to set system time: ${err.message}`);

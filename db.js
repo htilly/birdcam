@@ -75,6 +75,10 @@ function init() {
       onvif_username TEXT NOT NULL DEFAULT '',
       onvif_password TEXT NOT NULL DEFAULT '',
       ffmpeg_options TEXT DEFAULT '{}',
+      motion_min_area INTEGER DEFAULT NULL,
+      motion_threshold REAL DEFAULT NULL,
+      motion_blur_kernel INTEGER DEFAULT NULL,
+      motion_cooldown_sec INTEGER DEFAULT NULL,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
@@ -156,6 +160,20 @@ function migrate() {
   }
   if (!camCols.includes('time_sync_interval_hours')) {
     d.exec(`ALTER TABLE cameras ADD COLUMN time_sync_interval_hours INTEGER NOT NULL DEFAULT 24`);
+  }
+
+  // Motion detection settings per camera
+  if (!camCols.includes('motion_min_area')) {
+    d.exec(`ALTER TABLE cameras ADD COLUMN motion_min_area INTEGER DEFAULT NULL`);
+  }
+  if (!camCols.includes('motion_threshold')) {
+    d.exec(`ALTER TABLE cameras ADD COLUMN motion_threshold REAL DEFAULT NULL`);
+  }
+  if (!camCols.includes('motion_blur_kernel')) {
+    d.exec(`ALTER TABLE cameras ADD COLUMN motion_blur_kernel INTEGER DEFAULT NULL`);
+  }
+  if (!camCols.includes('motion_cooldown_sec')) {
+    d.exec(`ALTER TABLE cameras ADD COLUMN motion_cooldown_sec INTEGER DEFAULT NULL`);
   }
 
   // Ensure settings table exists (for upgrades from older versions)
@@ -665,7 +683,7 @@ function createCamera(display_name, host, port, urlPath, username, password, ffm
   return r.lastInsertRowid;
 }
 
-function updateCamera(id, display_name, host, port, urlPath, username, password, ffmpegOptionsJson = null, onvifPort = null, onvifUsername = null, onvifPassword = null, timeSyncEnabled = null, timeSyncIntervalHours = null) {
+function updateCamera(id, display_name, host, port, urlPath, username, password, ffmpegOptionsJson = null, onvifPort = null, onvifUsername = null, onvifPassword = null, timeSyncEnabled = null, timeSyncIntervalHours = null, motionSettings = null) {
   const rtsp_url = buildRtspUrl(host, port, urlPath, username, password);
   if (!validateRtspUrl(rtsp_url)) {
     throw new Error('Invalid RTSP URL — only rtsp:// URLs are allowed');
@@ -674,16 +692,33 @@ function updateCamera(id, display_name, host, port, urlPath, username, password,
   const cam = getCamera(id);
   const enabled = timeSyncEnabled !== null ? (timeSyncEnabled ? 1 : 0) : (cam.time_sync_enabled || 0);
   const interval = timeSyncIntervalHours !== null ? timeSyncIntervalHours : (cam.time_sync_interval_hours || 24);
+  
+  const motionMinArea = motionSettings?.min_area ?? cam.motion_min_area;
+  const motionThreshold = motionSettings?.threshold ?? cam.motion_threshold;
+  const motionBlurKernel = motionSettings?.blur_kernel ?? cam.motion_blur_kernel;
+  const motionCooldown = motionSettings?.cooldown_sec ?? cam.motion_cooldown_sec;
+  
   if (ffmpegOptionsJson !== null && ffmpegOptionsJson !== undefined) {
     const opts = typeof ffmpegOptionsJson === 'string' ? ffmpegOptionsJson : JSON.stringify(ffmpegOptionsJson || {});
     d.prepare(
-      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, ffmpeg_options = ?, time_sync_enabled = ?, time_sync_interval_hours = ?, updated_at = datetime('now') WHERE id = ?"
-    ).run(display_name, rtsp_url, host, port, urlPath, username, password, onvifPort || 8899, onvifUsername || '', onvifPassword || '', opts, enabled, interval, id);
+      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, ffmpeg_options = ?, time_sync_enabled = ?, time_sync_interval_hours = ?, motion_min_area = ?, motion_threshold = ?, motion_blur_kernel = ?, motion_cooldown_sec = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(display_name, rtsp_url, host, port, urlPath, username, password, onvifPort || 8899, onvifUsername || '', onvifPassword || '', opts, enabled, interval, motionMinArea, motionThreshold, motionBlurKernel, motionCooldown, id);
   } else {
     d.prepare(
-      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, time_sync_enabled = ?, time_sync_interval_hours = ?, updated_at = datetime('now') WHERE id = ?"
-    ).run(display_name, rtsp_url, host, port, urlPath, username, password, onvifPort || 8899, onvifUsername || '', onvifPassword || '', enabled, interval, id);
+      "UPDATE cameras SET display_name = ?, rtsp_url = ?, rtsp_host = ?, rtsp_port = ?, rtsp_path = ?, rtsp_username = ?, rtsp_password = ?, onvif_port = ?, onvif_username = ?, onvif_password = ?, time_sync_enabled = ?, time_sync_interval_hours = ?, motion_min_area = ?, motion_threshold = ?, motion_blur_kernel = ?, motion_cooldown_sec = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(display_name, rtsp_url, host, port, urlPath, username, password, onvifPort || 8899, onvifUsername || '', onvifPassword || '', enabled, interval, motionMinArea, motionThreshold, motionBlurKernel, motionCooldown, id);
   }
+}
+
+function getMotionSettings(cameraId) {
+  const cam = getCamera(cameraId);
+  if (!cam) return null;
+  return {
+    min_area: cam.motion_min_area,
+    threshold: cam.motion_threshold,
+    blur_kernel: cam.motion_blur_kernel,
+    cooldown_sec: cam.motion_cooldown_sec,
+  };
 }
 
 function deleteCamera(id) {
@@ -1089,4 +1124,5 @@ module.exports = {
   getChatWebAuthnCredentialById,
   updateChatWebAuthnCredentialCounter,
   updateChatWebAuthnCredentialDisplayName,
+  getMotionSettings,
 };

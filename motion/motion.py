@@ -80,12 +80,47 @@ def get_first_camera_rtsp_from_db():
     return None, None
 
 
+def get_motion_settings_from_db(camera_id: int) -> dict:
+    """Return motion detection settings for a camera from DB, or defaults."""
+    settings = {
+        "min_area": config.MIN_CONTOUR_AREA,
+        "threshold_fraction": config.MOTION_THRESHOLD_FRACTION,
+        "blur_kernel": config.BLUR_KERNEL,
+        "cooldown_sec": config.NOTIFICATION_COOLDOWN_SEC,
+        "recording_cooldown_sec": config.RECORDING_COOLDOWN_SEC,
+    }
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=2)
+        cur = conn.cursor()
+        row = cur.execute(
+            "SELECT motion_min_area, motion_threshold, motion_blur_kernel, motion_cooldown_sec FROM cameras WHERE id = ?",
+            (camera_id,),
+        ).fetchone()
+        conn.close()
+        if row:
+            if row[0] is not None:
+                settings["min_area"] = int(row[0])
+            if row[1] is not None:
+                settings["threshold_fraction"] = float(row[1])
+            if row[2] is not None:
+                k = int(row[2])
+                if k % 2 == 0:
+                    k += 1
+                settings["blur_kernel"] = k
+            if row[3] is not None:
+                settings["recording_cooldown_sec"] = int(row[3])
+    except Exception as e:
+        logger.warning(f"Could not read motion settings from DB: {e}")
+    return settings
+
+
 # Mutable config (can be updated by clients at runtime)
 runtime_config = {
     "min_area": config.MIN_CONTOUR_AREA,
     "threshold_fraction": config.MOTION_THRESHOLD_FRACTION,
     "cooldown_sec": config.NOTIFICATION_COOLDOWN_SEC,
     "recording_cooldown_sec": config.RECORDING_COOLDOWN_SEC,
+    "blur_kernel": config.BLUR_KERNEL,
 }
 
 
@@ -218,7 +253,7 @@ def process_frame(frame, bg_subtractor) -> tuple[bool, list, int, int]:
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
     # Ensure blur kernel is odd
-    k = config.BLUR_KERNEL | 1
+    k = runtime_config.get("blur_kernel", config.BLUR_KERNEL) | 1
     blurred = cv2.GaussianBlur(gray, (k, k), 0)
 
     # Background subtraction
