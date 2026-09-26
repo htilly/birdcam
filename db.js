@@ -29,6 +29,8 @@ function getDb() {
     fs.mkdirSync(dataDir, { recursive: true });
     db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL'); // safe with WAL, far fewer fsyncs
+    db.pragma('busy_timeout = 5000'); // motion.py also opens this DB
     init();
   }
   return db;
@@ -380,6 +382,23 @@ function migrate() {
     `);
   }
 
+  // Retention sweep and clip lists filter on starred and order by started_at.
+  d.exec('CREATE INDEX IF NOT EXISTS idx_motion_incidents_starred_started ON motion_incidents(starred, started_at)');
+
+  // Chat messages used to be HTML-escaped before storage *and* escaped again when
+  // rendered. Storage is now plain text; decode existing rows once.
+  if (getSetting('chat_plaintext_migrated') !== 'true') {
+    const decode = (s) => String(s)
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+      .replace(/&#x27;/g, "'").replace(/&amp;/g, '&');
+    const rows = d.prepare('SELECT id, nickname, text FROM chat_messages').all();
+    const upd = d.prepare('UPDATE chat_messages SET nickname = ?, text = ? WHERE id = ?');
+    d.transaction(() => {
+      for (const r of rows) upd.run(decode(r.nickname), decode(r.text), r.id);
+      setSetting('chat_plaintext_migrated', 'true');
+    })();
+  }
+
   // Add last_used_at column to webauthn_credentials if missing
   const webauthnCols = d.prepare("PRAGMA table_info(webauthn_credentials)").all().map(c => c.name);
   if (webauthnCols.includes('id') && !webauthnCols.includes('last_used_at')) {
@@ -525,6 +544,20 @@ function deleteUser(id) {
 
 function verifyPassword(password, hash) {
   return require('bcryptjs').compareSync(password, hash);
+}
+
+// Hash of a random string, compared against when the user doesn't exist so failed
+// logins take the same time either way.
+let _dummyHash = null;
+async function verifyPasswordAsync(password, hash) {
+  const bcrypt = require('bcryptjs');
+  if (typeof password !== 'string') password = '';
+  if (!hash) {
+    if (!_dummyHash) _dummyHash = bcrypt.hashSync(require('crypto').randomBytes(16).toString('hex'), 10);
+    await bcrypt.compare(password, _dummyHash);
+    return false;
+  }
+  return bcrypt.compare(password, hash);
 }
 
 // --- WebAuthn Credentials ---
@@ -847,27 +880,31 @@ function recordVisit(visitorKey) {
   _visitInsertCount++;
   if (_visitInsertCount >= VISIT_PRUNE_EVERY) {
     _visitInsertCount = 0;
-    stmt('pruneVisits', "DELETE FROM visits WHERE datetime(created_at) < datetime('now', '-90 days')").run();
+    stmt('pruneVisits', "DELETE FROM visits WHERE created_at < datetime('now', '-90 days')").run();
   }
 }
 
+// visits.created_at is stored as datetime('now') text ("YYYY-MM-DD HH:MM:SS", UTC),
+// which sorts lexically — compare the bare column so idx_visits_created_at is used
+// instead of wrapping it in datetime()/date() and scanning the whole table.
 function getVisitorStats() {
   const uniqueToday = stmt('visitorStatsToday', `
     SELECT COUNT(DISTINCT visitor_key) as n FROM visits
-    WHERE date(created_at, 'localtime') = date('now', 'localtime')
+    WHERE created_at >= datetime('now', '-2 days') -- index range; covers DST-long days
+      AND date(created_at, 'localtime') = date('now', 'localtime')
   `).get().n;
   const uniqueWeek = stmt('visitorStatsWeek', `
     SELECT COUNT(DISTINCT visitor_key) as n FROM visits
-    WHERE datetime(created_at) >= datetime('now', '-7 days')
+    WHERE created_at >= datetime('now', '-7 days')
   `).get().n;
   const uniqueMonth = stmt('visitorStatsMonth', `
     SELECT COUNT(DISTINCT visitor_key) as n FROM visits
-    WHERE datetime(created_at) >= datetime('now', '-30 days')
+    WHERE created_at >= datetime('now', '-30 days')
   `).get().n;
   const daily = stmt('visitorStatsDaily', `
     SELECT date(created_at, 'localtime') as date, COUNT(DISTINCT visitor_key) as count
     FROM visits
-    WHERE datetime(created_at) >= datetime('now', '-30 days')
+    WHERE created_at >= datetime('now', '-30 days')
     GROUP BY date(created_at, 'localtime')
     ORDER BY date
   `).all();
@@ -1058,6 +1095,7 @@ module.exports = {
   updateUserPassword,
   deleteUser,
   verifyPassword,
+  verifyPasswordAsync,
   listCameras,
   getCamera,
   getOnvifCredentials,

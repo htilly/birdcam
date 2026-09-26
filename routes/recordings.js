@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -14,6 +15,14 @@ const playbackSessions = new Map();
 const PLAYBACK_TTL_MS = 5 * 60 * 1000; // clean up after 5 min idle
 // (#17) Maximum session duration regardless of activity — prevents runaway ffmpeg processes
 const PLAYBACK_MAX_DURATION_MS = 30 * 60 * 1000; // 30 minutes absolute max
+const MAX_PLAYBACK_SESSIONS = 4; // each one is a libx264 transcode
+
+// Called by the /hls static handler whenever a playback playlist/segment is fetched,
+// so a session that is being watched is not reaped as idle.
+function touchPlayback(key) {
+  const sess = playbackSessions.get(key);
+  if (sess) sess.lastAccess = Date.now();
+}
 
 setInterval(() => {
   const now = Date.now();
@@ -28,15 +37,12 @@ setInterval(() => {
 
 function stopPlayback(key, sess) {
   if (sess.process && !sess.process.killed) sess.process.kill('SIGKILL');
-  try {
-    fs.readdirSync(sess.hlsDir).forEach((f) => fs.unlinkSync(path.join(sess.hlsDir, f)));
-    fs.rmdirSync(sess.hlsDir);
-  } catch (_) {}
+  fs.promises.rm(sess.hlsDir, { recursive: true, force: true }).catch(() => {});
   playbackSessions.delete(key);
 }
 
 // GET /api/recordings/:cameraId?date=YYYY-MM-DD — list clips for date (no login required for public page)
-router.get('/:cameraId', (req, res) => {
+router.get('/:cameraId', async (req, res) => {
   const cam = db.getCamera(Number(req.params.cameraId));
   if (!cam) return res.status(404).json({ error: 'Camera not found' });
 
@@ -48,8 +54,9 @@ router.get('/:cameraId', (req, res) => {
   // Use motion_incidents as our "recordings index" for this camera + date.
   // We filter by local calendar date so it matches what the user picked.
   const incidents = db.listMotionIncidentsForDate(cam.id, dateStr);
-  const clips = incidents
-    .map((row) => {
+  const fileExists = (p) => fs.promises.access(p).then(() => true, () => false);
+  const clips = (await Promise.all(incidents
+    .map(async (row) => {
       if (!row.started_at || !row.ended_at) return null;
       const start = new Date(row.started_at);
       const end = new Date(row.ended_at);
@@ -63,11 +70,11 @@ router.get('/:cameraId', (req, res) => {
         sizeMB,
       };
       const filename = path.basename(row.file_path || '');
-      if (filename.endsWith('.mp4') && motionClipsDir && fs.existsSync(path.join(motionClipsDir, filename))) {
+      if (filename.endsWith('.mp4') && motionClipsDir && await fileExists(path.join(motionClipsDir, filename))) {
         clip.filename = filename;
       }
       return clip;
-    })
+    })))
     .filter(Boolean);
 
   res.json({ clips });
@@ -81,22 +88,34 @@ router.post('/:cameraId/stream', requireLogin, (req, res) => {
 
   const { startTime, endTime } = req.body || {};
   if (!startTime || !endTime) return res.status(400).json({ error: 'startTime and endTime required' });
+  const startMs = Date.parse(startTime);
+  const endMs = Date.parse(endTime);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return res.status(400).json({ error: 'Invalid startTime/endTime' });
+  }
+  if (playbackSessions.size >= MAX_PLAYBACK_SESSIONS) {
+    return res.status(429).json({ error: 'Too many active playback sessions' });
+  }
 
-  // Build a unique key for this playback
-  const key = `pb-${cam.id}-${Date.now()}`;
+  // Build a unique key for this playback (random suffix: two requests in the
+  // same millisecond must not overwrite each other and orphan an ffmpeg)
+  const key = `pb-${cam.id}-${Date.now()}${crypto.randomInt(1000, 10000)}`;
   const pbDir = path.join(hlsBaseDir, key);
   fs.mkdirSync(pbDir, { recursive: true });
 
-  const fmtRtsp = (t) => {
-    const d = new Date(t);
+  // The trailing "z" means UTC, so the UTC getters must be used — local getters
+  // shift the window by the server's UTC offset.
+  const fmtRtsp = (ms) => {
+    const d = new Date(ms);
     const pad = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}t${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}z`;
+    return `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}t${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}z`;
   };
 
-  const rtspUrl = `${cam.rtsp_url}?starttime=${fmtRtsp(startTime)}&endtime=${fmtRtsp(endTime)}`;
+  const rtspUrl = `${cam.rtsp_url}?starttime=${fmtRtsp(startMs)}&endtime=${fmtRtsp(endMs)}`;
   const outM3u8 = path.join(pbDir, 'index.m3u8');
 
   const args = [
+    '-hide_banner', '-loglevel', 'error', '-nostats',
     '-rtsp_transport', 'tcp',
     '-i', rtspUrl,
     '-c:v', 'libx264',
@@ -118,10 +137,19 @@ router.post('/:cameraId/stream', requireLogin, (req, res) => {
     outM3u8,
   ];
 
-  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'], detached: false });
+  // stdout is unused; stderr must be drained or ffmpeg blocks once the pipe buffer fills.
+  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'], detached: false });
+  let stderrTail = '';
+  proc.stderr.on('data', (chunk) => {
+    stderrTail = (stderrTail + chunk.toString()).slice(-2000);
+  });
+  proc.on('error', (err) => {
+    console.error(`[playback] ffmpeg failed to start for ${key}:`, err.message);
+  });
   playbackSessions.set(key, { process: proc, hlsDir: pbDir, lastAccess: Date.now(), createdAt: Date.now() });
 
-  proc.on('exit', () => {
+  proc.on('exit', (code) => {
+    if (code) console.warn(`[playback] ffmpeg for ${key} exited code=${code}: ${stderrTail.trim().split('\n').slice(-5).join(' | ')}`);
     const sess = playbackSessions.get(key);
     if (sess) sess.process = null;
   });
@@ -143,6 +171,7 @@ router.delete('/stream/:key', requireLogin, (req, res) => {
   res.json({ ok: true });
 });
 
+  router.touchPlayback = touchPlayback;
   return router;
 }
 

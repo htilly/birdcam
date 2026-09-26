@@ -26,6 +26,7 @@ const adminRoutes = require('./routes/admin');
 const recordingsRoutes = require('./routes/recordings');
 const { requestIdMiddleware } = require('./middleware/requestId');
 const { auditLog } = require('./middleware/audit');
+const SqliteSessionStore = require('./sessionStore');
 const {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -156,10 +157,14 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
-// Session configuration — middleware is swappable so secret can be rotated at runtime
+// Session configuration — middleware is swappable so secret can be rotated at runtime.
+// Sessions live in SQLite (not the default MemoryStore, which never evicts and would let
+// anonymous WebAuthn option requests grow memory without bound).
+const sessionStore = new SqliteSessionStore();
 function makeSessionMiddleware(secret) {
   return session({
     secret,
+    store: sessionStore,
     name: 'birdcam.sid',
     resave: false,
     saveUninitialized: false,
@@ -178,6 +183,7 @@ app.use((req, res, next) => _sessionMiddleware(req, res, next));
 app.rotateSessionSecret = () => {
   const newSecret = crypto.randomBytes(32).toString('hex');
   db.setSetting('session_secret', newSecret);
+  sessionStore.clear();
   _sessionMiddleware = makeSessionMiddleware(newSecret);
 };
 
@@ -214,6 +220,8 @@ setInterval(() => {
 app.use('/admin/login', (req, res, next) => _loginLimiterState.limiter(req, res, next));
 app.use('/admin/setup', (req, res, next) => _setupLimiterState.limiter(req, res, next));
 app.use('/api', (req, res, next) => _apiLimiterState.limiter(req, res, next));
+// Public WebAuthn option/verify endpoints create sessions — rate limit them like the API.
+app.use('/admin/webauthn', (req, res, next) => _apiLimiterState.limiter(req, res, next));
 
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders(res, filePath) {
@@ -230,26 +238,31 @@ app.use(express.static(path.join(__dirname, 'public'), {
 // Browsers request /favicon.ico by default; serve existing PNG to avoid 404
 const faviconPath = path.join(__dirname, 'public', 'favicon.png');
 app.get('/favicon.ico', (req, res) => {
-  if (fs.existsSync(faviconPath)) {
-    res.type('png');
-    res.sendFile(faviconPath);
-  } else {
-    res.status(204).end();
-  }
+  res.type('png');
+  res.sendFile(faviconPath, (err) => {
+    if (err && !res.headersSent) res.status(204).end();
+  });
 });
 
+const recordingsRouter = recordingsRoutes(motionClipsDir);
+
 // HLS streams — optionally require auth; start stream on demand if m3u8 missing
-app.use('/hls', (req, res, next) => {
+app.use('/hls', async (req, res, next) => {
   if (db.getSetting('require_auth_streams') === 'true') {
     if (!req.session || !req.session.userId) {
       return res.status(401).json({ error: 'Authentication required' });
     }
   }
+  // Keep recording playback sessions alive while their segments are being fetched.
+  const pb = req.path.match(/^\/(pb-\d+-\d+)\//);
+  if (pb) recordingsRouter.touchPlayback(pb[1]);
   const m = req.path.match(/\/cam-(\d+)\.m3u8$/);
   if (m && req.method === 'GET') {
-    const cameraId = m[1];
+    const cameraId = Number(m[1]);
     const m3u8Path = path.join(streamManager.hlsDir, `cam-${cameraId}.m3u8`);
-    if (!fs.existsSync(m3u8Path)) {
+    // Polled by every viewer every couple of seconds — use async access, not existsSync.
+    const exists = await fsPromises.access(m3u8Path).then(() => true, () => false);
+    if (!exists) {
       if (!streamManager.isRunning(cameraId)) {
         const cam = db.getCamera(cameraId);
         if (cam) {
@@ -312,7 +325,7 @@ app.get('/api/visit', (req, res) => {
 
 app.use('/admin', adminRoutes);
 // (#19) Removed duplicate express.json() — already registered at startup with { limit: '10mb' }
-app.use('/api/recordings', recordingsRoutes(motionClipsDir));
+app.use('/api/recordings', recordingsRouter);
 
 // --- Chat WebAuthn (public, for chat identity) ---
 function getChatWebAuthnRpConfig(req) {
@@ -629,7 +642,7 @@ app.delete('/api/motion-clips/:id', (req, res) => {
   if (incident.file_path) {
     const base = path.basename(incident.file_path);
     if (base === incident.file_path || !base.includes('..')) {
-      try { fs.unlinkSync(path.join(motionClipsDir, base)); } catch (_) {}
+      fsPromises.unlink(path.join(motionClipsDir, base)).catch(() => {});
     }
   }
   db.deleteMotionIncident(id);
@@ -642,9 +655,10 @@ app.get('/clips/:filename', (req, res) => {
   if (!filename.endsWith('.mp4') || !/^[\w\-]+\.mp4$/.test(filename)) {
     return res.status(400).send('Invalid filename');
   }
-  const filePath = path.join(motionClipsDir, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
-  res.sendFile(filePath);
+  // sendFile stats the file itself; a missing file surfaces as ENOENT (no sync check).
+  res.sendFile(path.join(motionClipsDir, filename), (err) => {
+    if (err && !res.headersSent) res.status(err.status || 404).send('Not found');
+  });
 });
 
 const server = http.createServer(app);
@@ -673,13 +687,16 @@ function isChatDisabled() {
   return _chatDisabledCache;
 }
 
-function sanitizeChat(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
+// Chat text is stored and sent as plain text; every renderer (public chat, admin
+// chat page) HTML-escapes at display time. Escaping here as well double-escaped
+// messages ("I <3 birds" showed as "I &lt;3 birds"). Only strip control characters.
+function cleanChatText(str, maxLen) {
+  return String(str).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, maxLen).trim();
+}
+
+// Strip server-only fields (ip_address) before sending chat messages to viewers.
+function toPublicChatMessage(m) {
+  return { id: m.id, nickname: m.nickname, text: m.text, time: m.time };
 }
 
 function getClientIp(req) {
@@ -732,6 +749,14 @@ function broadcastClearChat() {
   });
 }
 
+// Serialize once, not once per client.
+function broadcastSnapshots() {
+  const payload = JSON.stringify({ type: 'snapshots', ...buildSnapshotsPayload() });
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) client.send(payload);
+  });
+}
+
 // Reload chat messages from database (after admin operations)
 function reloadChatMessages() {
   chatMessages.length = 0;
@@ -741,8 +766,9 @@ function reloadChatMessages() {
 // Use noServer so both WebSocket servers coexist on the same HTTP server.
 // With { server, path }, the first server aborts upgrades for non-matching
 // paths before the second server can handle them.
-const wss = new WebSocketServer({ noServer: true });
-const motionWss = new WebSocketServer({ noServer: true });
+// maxPayload: ws defaults to 100 MiB per message; chat and motion messages are tiny.
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+const motionWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
 server.on('upgrade', (request, socket, head) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;
@@ -753,8 +779,12 @@ server.on('upgrade', (request, socket, head) => {
       wss.emit('connection', ws, request);
     });
   } else if (pathname === '/motion-ws') {
-    motionWss.handleUpgrade(request, socket, head, (ws) => {
-      motionWss.emit('connection', ws, request);
+    // Load the express session so the connection handler can tell admins apart
+    // (only admins may change detector config).
+    _sessionMiddleware(request, {}, () => {
+      motionWss.handleUpgrade(request, socket, head, (ws) => {
+        motionWss.emit('connection', ws, request);
+      });
     });
   } else {
     console.log(`[ws-upgrade] Rejected unknown path: ${pathname}`);
@@ -794,6 +824,21 @@ function safeNumber(n, fallback) {
   const x = Number(n);
   return Number.isFinite(x) ? x : fallback;
 }
+
+function clampNumber(n, min, max, fallback) {
+  return Math.min(max, Math.max(min, safeNumber(n, fallback)));
+}
+
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+}
+
+// Message types an anonymous browser may relay to motion.py; config_update needs an admin session.
+const MOTION_BROWSER_PUBLIC_TYPES = new Set(['ping', 'subscribe', 'unsubscribe']);
+const MOTION_BROWSER_ADMIN_TYPES = new Set(['config_update']);
 
 function pushOpt(args, key, value) {
   if (value === undefined || value === null) return;
@@ -877,12 +922,15 @@ function stopMotionIncident(cameraId, endedAtIso) {
   if (state.endTimer) clearTimeout(state.endTimer);
 
   const proc = state.ffmpegProc;
-  if (proc && !proc.killed) {
+  // Note: proc.killed becomes true as soon as a signal is *sent*, so it can't be used
+  // to tell whether the process actually exited — check exitCode/signalCode instead.
+  const hasExited = () => proc.exitCode !== null || proc.signalCode !== null;
+  if (proc && !hasExited()) {
     // SIGINT usually allows ffmpeg to finalize the MP4 container.
     try { proc.kill('SIGINT'); } catch (_) {}
     setTimeout(() => {
       try {
-        if (proc && !proc.killed) proc.kill('SIGKILL');
+        if (!hasExited()) proc.kill('SIGKILL');
       } catch (_) {}
     }, 5000);
   }
@@ -917,11 +965,11 @@ function stopMotionIncident(cameraId, endedAtIso) {
         .slice(-25)
         .join('\n');
       console.warn(`[motion-ws] Recording produced 0 bytes, removing incident ${state.incidentId}. FFmpeg stderr (last lines):\n${stderr || '(none)'}`);
-      try { fs.unlinkSync(state.filePath); } catch (_) {}
+      fsPromises.unlink(state.filePath).catch(() => {});
       db.deleteMotionIncident(state.incidentId);
     } else if (durationSec > 0 && durationSec < MIN_RECORDING_SEC) {
       console.info(`[motion-ws] Recording ${state.incidentId} too short (${durationSec.toFixed(1)}s < ${MIN_RECORDING_SEC}s), deleting.`);
-      try { fs.unlinkSync(state.filePath); } catch (_) {}
+      fsPromises.unlink(state.filePath).catch(() => {});
       db.deleteMotionIncident(state.incidentId);
     } else {
       enforceMotionClipRetention();
@@ -976,7 +1024,7 @@ function enforceMotionClipRetention() {
       const overSize = maxBytes > 0 && bytes > maxBytes;
       if (!overCount && !overSize) break;
 
-      try { fs.unlinkSync(clip.file_path); } catch (_) {}
+      fsPromises.unlink(clip.file_path).catch(() => {});
       idsToDelete.push(clip.id);
       count -= 1;
       bytes -= clip.size_bytes || 0;
@@ -999,23 +1047,30 @@ motionWss.on('connection', (ws, req) => {
   const origin = req.headers.origin;
   const host = req.headers.host || '';
 
+  // Use the raw socket address — never X-Forwarded-For, which any client can set.
+  // A request relayed by a local reverse proxy also arrives from 127.0.0.1, so any
+  // forwarding header means the connection did not originate on this host.
+  const socketIp = req.socket.remoteAddress;
   const isLocalIp =
-    ip === '127.0.0.1' ||
-    ip === '::1' ||
-    ip === '::ffff:127.0.0.1';
+    (socketIp === '127.0.0.1' || socketIp === '::1' || socketIp === '::ffff:127.0.0.1') &&
+    !req.headers['x-forwarded-for'] && !req.headers['x-real-ip'] && !req.headers.forwarded;
 
   const motionDetectorToken = url.searchParams.get('token') || req.headers['x-motion-token'];
 
   if (role === 'detector') {
     // --- Motion detector (Python) connecting ---
-    const expectedDetectorToken = process.env.MOTION_DETECTOR_TOKEN || '';
-    if (expectedDetectorToken) {
-      if (!motionDetectorToken || motionDetectorToken !== expectedDetectorToken) {
+    // motionManager passes its token to the motion.py it spawns; a manually started
+    // motion.py must use MOTION_DETECTOR_TOKEN or connect from localhost.
+    const configuredToken = process.env.MOTION_DETECTOR_TOKEN || '';
+    const tokenOk = !!motionDetectorToken &&
+      [configuredToken, motionManager.getDetectorToken()].some((t) => safeEqual(motionDetectorToken, t));
+    if (configuredToken) {
+      if (!tokenOk) {
         console.warn(`[motion-ws] Rejecting detector connection from ip=${ip}: invalid or missing token`);
         try { ws.close(1008, 'unauthorized'); } catch (_) {}
         return;
       }
-    } else if (!isLocalIp) {
+    } else if (!tokenOk && !isLocalIp) {
       console.warn(`[motion-ws] Rejecting detector connection from non-local ip=${ip} (no MOTION_DETECTOR_TOKEN configured)`);
       try { ws.close(1008, 'unauthorized'); } catch (_) {}
       return;
@@ -1040,10 +1095,11 @@ motionWss.on('connection', (ws, req) => {
       if (msg && msg.type) {
         if (msg.type === 'config') {
           if (msg.cooldown_sec !== undefined) {
-            motionRuntimeConfig.cooldown_sec = safeNumber(msg.cooldown_sec, motionRuntimeConfig.cooldown_sec);
+            motionRuntimeConfig.cooldown_sec = clampNumber(msg.cooldown_sec, 5, 3600, motionRuntimeConfig.cooldown_sec);
           }
           if (msg.recording_cooldown_sec !== undefined) {
-            motionRuntimeConfig.recording_cooldown_sec = safeNumber(msg.recording_cooldown_sec, motionRuntimeConfig.recording_cooldown_sec);
+            // Upper bound keeps a bad value from recording one clip for hours.
+            motionRuntimeConfig.recording_cooldown_sec = clampNumber(msg.recording_cooldown_sec, 1, 60, motionRuntimeConfig.recording_cooldown_sec);
           }
         } else if (msg.type === 'motion') {
           const cameraId = Number(msg.camera_id);
@@ -1128,8 +1184,18 @@ motionWss.on('connection', (ws, req) => {
   const backendOnline = _motionDetector && _motionDetector.readyState === 1;
   ws.send(JSON.stringify({ type: backendOnline ? 'backend_connected' : 'backend_disconnected' }));
 
+  const isAdmin = !!(req.session && req.session.userId);
   ws.on('message', (data) => {
     const str = data.toString();
+    let msg = null;
+    try { msg = JSON.parse(str); } catch (_) {}
+    const type = msg && typeof msg === 'object' ? msg.type : null;
+    const allowed = MOTION_BROWSER_PUBLIC_TYPES.has(type) ||
+      (isAdmin && MOTION_BROWSER_ADMIN_TYPES.has(type));
+    if (!allowed) {
+      console.warn(`[motion-ws] Dropping browser message type=${String(type).slice(0, 40)} ip=${ip} admin=${isAdmin}`);
+      return;
+    }
     console.log(`[motion-ws] Browser → detector: ${str.slice(0, 200)}`);
     if (_motionDetector && _motionDetector.readyState === 1) {
       _motionDetector.send(str);
@@ -1202,7 +1268,7 @@ wss.on('connection', (ws, req) => {
   ws._clientIp = clientIp;
   console.log(`[chat-ws] Connected ip=${clientIp} (total: ${wss.clients.size})`);
 
-  ws.send(JSON.stringify({ type: 'history', messages: chatMessages.slice(-50) }));
+  ws.send(JSON.stringify({ type: 'history', messages: chatMessages.slice(-50).map(toPublicChatMessage) }));
   broadcastStats();
   ws.on('close', (code, reason) => {
     console.log(`[chat-ws] Disconnected ip=${clientIp} code=${code} reason=${reason || 'none'} (total: ${wss.clients.size})`);
@@ -1233,8 +1299,8 @@ wss.on('connection', (ws, req) => {
         }
         
         const msg = {
-          nickname: sanitizeChat(String(data.nickname).slice(0, 30).trim()),
-          text: sanitizeChat(String(data.text).slice(0, 500).trim()),
+          nickname: cleanChatText(data.nickname, 30),
+          text: cleanChatText(data.text, 500),
           time: new Date().toISOString(),
           ip_address: ws._clientIp,
         };
@@ -1246,8 +1312,9 @@ wss.on('connection', (ws, req) => {
         chatMessages.push(msg);
         if (chatMessages.length > MAX_CHAT_MESSAGES) chatMessages.shift();
         
+        const payload = JSON.stringify({ type: 'message', ...toPublicChatMessage(msg) });
         wss.clients.forEach((client) => {
-          if (client.readyState === 1) client.send(JSON.stringify({ type: 'message', ...msg }));
+          if (client.readyState === 1) client.send(payload);
         });
         broadcastStats();
       }
@@ -1285,10 +1352,7 @@ app.post('/api/snapshots', snapshotRateLimitMiddleware, async (req, res) => {
     const nick = String(nickname || 'Guest').slice(0, 30).trim() || 'Guest';
     const cam = String(cameraName || '').slice(0, 60).trim();
     db.addSnapshot(filename, nick, cam);
-    const payload = buildSnapshotsPayload();
-    wss.clients.forEach(client => {
-      if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', ...payload }));
-    });
+    broadcastSnapshots();
     res.json({ ok: true, url: `/snapshots/${filename}` });
   } catch (err) {
     console.error('[snapshot] Write error:', err.message);
@@ -1313,10 +1377,7 @@ app.post('/api/admin/snapshots/:id/star', requireSameOriginApi, auditLog('api.sn
   const id = Number(req.params.id);
   const starred = (req.body || {}).starred !== false && (req.body || {}).starred !== 'false';
   db.setSnapshotStarred(id, starred);
-  const payload = buildSnapshotsPayload();
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', ...payload }));
-  });
+  broadcastSnapshots();
   res.json({ ok: true, starred });
 });
 
@@ -1328,13 +1389,10 @@ app.post('/api/admin/snapshots/:id/delete', requireSameOriginApi, auditLog('api.
     const base = path.basename(snap.filename);
     if (base !== snap.filename || base.includes('..')) return res.status(400).json({ error: 'Invalid snapshot' });
     const filePath = path.join(snapshotDir, base);
-    try { fs.unlinkSync(filePath); } catch (_) {}
+    fsPromises.unlink(filePath).catch(() => {});
     db.deleteSnapshot(id);
   }
-  const payload = buildSnapshotsPayload();
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', ...payload }));
-  });
+  broadcastSnapshots();
   res.json({ ok: true });
 });
 

@@ -17,6 +17,11 @@ on:
         default: false
         type: boolean
 
+# Least privilege: images are pushed to Docker Hub with secrets, not GHCR,
+# so the GITHUB_TOKEN only needs to read the repo.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -31,7 +36,7 @@ jobs:
           node-version: '22.x'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test
@@ -54,26 +59,41 @@ jobs:
         uses: docker/setup-buildx-action@v3.6.1
 
       - name: Log in to Docker Hub
-        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Determine Docker tags
         id: docker_tags
+        # User-controlled values are passed via env (never interpolated into
+        # the script) to prevent shell injection.
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          TAG: ${{ github.event.inputs.tag }}
+          INCLUDE_LATEST: ${{ github.event.inputs.include_latest }}
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
-          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/birdcam"
+          IMAGE="${DOCKERHUB_USERNAME}/birdcam"
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag }}"
-            if [ "${{ github.event.inputs.include_latest }}" = "true" ]; then
-              echo "tags=${IMAGE}:latest,${IMAGE}:${TAG},${IMAGE}:${TAG}-${SHORT_SHA}" >> $GITHUB_OUTPUT
-            else
-              echo "tags=${IMAGE}:${TAG},${IMAGE}:${TAG}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # Docker tag grammar; also blocks newlines that could inject extra outputs
+            if ! [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}$ ]]; then
+              echo "::error::Invalid Docker tag: must match [A-Za-z0-9_][A-Za-z0-9_.-]{0,119}"
+              exit 1
             fi
-          elif [ "${{ github.ref_name }}" = "dev" ]; then
-            echo "tags=${IMAGE}:dev,${IMAGE}:dev-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            if [ "$INCLUDE_LATEST" = "true" ]; then
+              echo "tags=${IMAGE}:latest,${IMAGE}:${TAG},${IMAGE}:${TAG}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            else
+              echo "tags=${IMAGE}:${TAG},${IMAGE}:${TAG}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ "$REF_NAME" = "dev" ]; then
+            echo "tags=${IMAGE}:dev,${IMAGE}:dev-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           else
             # Push to main
-            echo "tags=${IMAGE}:latest,${IMAGE}:main,${IMAGE}:main-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "tags=${IMAGE}:latest,${IMAGE}:main,${IMAGE}:main-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push multi-platform Docker image

@@ -1,7 +1,9 @@
 (function () {
   const NICKNAME_KEY = 'birdcam_nickname';
   const LAST_VISIT_KEY = 'birdcam_last_visit';
-  const STATS_POLL_INTERVAL = 8000;
+  // Viewer/chat counts are pushed over the chat WebSocket; polling only refreshes
+  // stream live-status, so it can be slow.
+  const STATS_POLL_INTERVAL = 30000;
 
   let UI_LOCALE = { locale: undefined, hour12: undefined };
 
@@ -210,10 +212,16 @@
     }
   }
 
+  let camerasJson = '';
   function loadCameras() {
+    if (document.hidden) return;
     fetch('/api/cameras')
       .then((r) => r.json())
       .then((list) => {
+        // Periodic refresh: skip re-rendering when nothing changed.
+        const json = JSON.stringify(list);
+        if (json === camerasJson) return;
+        camerasJson = json;
         cameras = list;
         renderTabs();
         if (recCamera) populateRecCameras();
@@ -227,6 +235,7 @@
       })
       .catch(() => {
         cameras = [];
+        camerasJson = '';
         renderTabs();
       });
   }
@@ -264,11 +273,15 @@
         maxBufferLength: 4,
         maxMaxBufferLength: 8,
       });
+      const inst = hls;
       hls.attachMedia(video);
       let manifestRetries = 0;
       const maxManifestRetries = 5;
+      let mediaRecoveries = 0;
       function tryLoadSource() {
-        hls.loadSource(src);
+        // A retry scheduled for a previous camera/player must not touch the current one.
+        if (hls !== inst) return;
+        inst.loadSource(src);
       }
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         manifestRetries = 0;
@@ -281,6 +294,11 @@
           if (isManifestNotReady && manifestRetries < maxManifestRetries) {
             manifestRetries += 1;
             setTimeout(tryLoadSource, 3000);
+            return;
+          }
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries < 3) {
+            mediaRecoveries += 1;
+            inst.recoverMediaError();
             return;
           }
           videoOverlay.classList.remove('hidden');
@@ -815,7 +833,10 @@
   updateLastVisit();
   fetchStats();
   adminMePromise.then(() => loadRecentClips());
-  setInterval(fetchStats, STATS_POLL_INTERVAL);
+  setInterval(() => { if (!document.hidden) fetchStats(); }, STATS_POLL_INTERVAL);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { fetchStats(); loadCameras(); }
+  });
 
   // --- Recordings panel ---
   const recToggle = document.getElementById('rec-toggle');
@@ -830,7 +851,10 @@
   if (recDate) recDate.value = new Date().toISOString().slice(0, 10);
 
   function populateRecCameras() {
+    const prev = recCamera.value;
     recCamera.innerHTML = cameras.map((c) => `<option value="${c.id}">${escapeHtml(c.display_name)}</option>`).join('');
+    // Keep the user's choice across periodic camera refreshes.
+    if (prev && cameras.some((c) => String(c.id) === prev)) recCamera.value = prev;
   }
 
   if (recToggle) recToggle.addEventListener('click', () => {

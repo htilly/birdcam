@@ -11,7 +11,15 @@ import os
 RTSP_URL = os.environ.get("MOTION_RTSP_URL", "")
 
 # --- Motion Detection Thresholds ---
-# Minimum contour area (in pixels²) to count as motion. Raise to ignore small changes.
+# Spatial settings below (MIN_CONTOUR_AREA, BLUR_KERNEL, MORPH_KERNEL) are expressed
+# relative to a REFERENCE_WIDTH-wide frame (640x360, the historical motion frame size)
+# and scaled to the actual processing size by motion.py. That keeps existing
+# configured values (e.g. admin UI min_area 600/1500/4000) meaning the same physical
+# region size regardless of the frame size ffmpeg delivers or PROCESS_WIDTH.
+REFERENCE_WIDTH = 640
+
+# Minimum contour area (in pixels² of a 640-wide reference frame) to count as
+# motion. Raise to ignore small changes.
 MIN_CONTOUR_AREA = int(os.environ.get("MOTION_MIN_AREA", 1500))
 
 # Fraction of frame area that must change to trigger a notification (0.0 - 1.0)
@@ -22,14 +30,34 @@ MOTION_THRESHOLD_FRACTION = float(os.environ.get("MOTION_THRESHOLD_FRACTION", 0.
 BG_HISTORY = int(os.environ.get("MOTION_BG_HISTORY", 500))
 
 # --- Frame Processing ---
-# Resize frames to this width before processing (for performance). Height auto-scales.
-PROCESS_WIDTH = int(os.environ.get("MOTION_PROCESS_WIDTH", 640))
+# Downscale frames wider than this before processing (for performance). Height
+# auto-scales. Frames already this size or smaller are used as-is (never upscaled);
+# the stdin pipeline delivers 320x180 so no resize happens there.
+PROCESS_WIDTH = int(os.environ.get("MOTION_PROCESS_WIDTH", 320))
 
-# Gaussian blur kernel size (must be odd). Higher = less noise sensitivity.
+# Gaussian blur kernel size at REFERENCE_WIDTH. Higher = less noise sensitivity.
+# Scaled to the processing width and forced odd (21 @ 640px -> 11 @ 320px).
 BLUR_KERNEL = int(os.environ.get("MOTION_BLUR_KERNEL", 21))
+
+# Elliptical morphology kernel size at REFERENCE_WIDTH (5 @ 640px -> 3 @ 320px).
+MORPH_KERNEL = int(os.environ.get("MOTION_MORPH_KERNEL", 5))
 
 # Morphological dilation iterations to merge nearby contours
 DILATE_ITERATIONS = int(os.environ.get("MOTION_DILATE_ITERATIONS", 2))
+
+# OpenCV worker threads. Frames are tiny (320x180), so splitting each op across
+# threads costs more in dispatch/sync than it saves, and on a Pi-class device the
+# extra threads compete with ffmpeg (which is encoding the live stream) for cores.
+CV_THREADS = int(os.environ.get("MOTION_CV_THREADS", 1))
+
+# --- Event rate ---
+# Motion events go to the Node relay, which forwards each one to every browser.
+# Instead of one per processed frame (~10/s), send on state change, then at most
+# every ACTIVE_EVENT_INTERVAL_SEC while motion continues, and an idle heartbeat
+# every IDLE_EVENT_INTERVAL_SEC otherwise. ACTIVE_EVENT_INTERVAL_SEC must stay
+# well below the server's recording_cooldown_sec (min 1s), see motion.py.
+ACTIVE_EVENT_INTERVAL_SEC = 0.5
+IDLE_EVENT_INTERVAL_SEC = 5.0
 
 # --- Cooldown ---
 # Minimum seconds between push notifications (avoid spam)

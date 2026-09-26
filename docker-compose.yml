@@ -8,9 +8,8 @@ services:
       - "3000:3000"
     environment:
       - PORT=3000
-      # Run motion detector as a second process inside the same container.
+      # Start the Python motion detector (spawned by Node in this same container).
       - ENABLE_MOTION_DETECTOR=true
-      - MOTION_RELAY_URL=ws://127.0.0.1:3000/motion-ws?role=detector
       # Optional: create first admin on first run
       # - ADMIN_USER=admin
       # - ADMIN_PASSWORD=changeme
@@ -19,6 +18,11 @@ services:
       # - SESSION_SECRET=your-secret-here
     volumes:
       - birdcam-data:/app/data
+    # HLS segments are ephemeral and rewritten every few seconds; keep them in
+    # RAM instead of the container's writable layer. 256m is ample for several
+    # cameras (only the last few segments per camera are kept).
+    tmpfs:
+      - /app/hls:size=256m
     restart: unless-stopped
 
 volumes:

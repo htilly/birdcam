@@ -1,5 +1,19 @@
 const db = require('../db');
 
+// Body keys that must never be written to the audit log (e.g. `password`,
+// `rtsp_password`, `onvif_password`, `_csrf`, `session_secret`, `token`).
+const SENSITIVE_KEY_RE = /pass|secret|token|csrf|credential|private/i;
+
+function redactSecrets(value, depth = 0) {
+  if (depth > 5 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((v) => redactSecrets(v, depth + 1));
+  const out = {};
+  for (const [key, v] of Object.entries(value)) {
+    out[key] = SENSITIVE_KEY_RE.test(key) ? '[REDACTED]' : redactSecrets(v, depth + 1);
+  }
+  return out;
+}
+
 function auditLog(action) {
   return (req, res, next) => {
     // Capture request details
@@ -16,7 +30,7 @@ function auditLog(action) {
       // Don't log passwords/secrets
       body: action.includes('password') || action.includes('login') || action.includes('setup')
         ? '[REDACTED]'
-        : req.body
+        : redactSecrets(req.body)
     };
 
     // Log audit entry
@@ -38,4 +52,4 @@ function auditLog(action) {
   };
 }
 
-module.exports = { auditLog };
+module.exports = { auditLog, redactSecrets };

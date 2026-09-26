@@ -22,6 +22,29 @@ function getFpsModeSupported() {
   return fpsModeSupported;
 }
 
+// RTSP socket I/O timeout flag. FFmpeg 4.x calls it -stimeout; FFmpeg 5.0 removed
+// -stimeout and -timeout took over its meaning (socket I/O timeout, microseconds).
+// On 4.x, -timeout means something else (listen timeout, implies listen mode), so
+// we must pick the right one. Detected once from the rtsp demuxer's help output.
+// If detection fails (ffmpeg missing/broken), default to the modern -timeout:
+// streams cannot start without ffmpeg anyway, and every supported image ships 5+.
+let rtspTimeoutFlag = null;
+function getRtspTimeoutFlag() {
+  if (rtspTimeoutFlag !== null) return rtspTimeoutFlag;
+  let out = '';
+  try {
+    out = execSync('ffmpeg -hide_banner -h demuxer=rtsp 2>&1', {
+      timeout: 3000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    out = (e.stdout || '') + (e.stderr || '');
+  }
+  rtspTimeoutFlag = out.includes('-stimeout') ? '-stimeout' : '-timeout';
+  return rtspTimeoutFlag;
+}
+
 const hlsDir = path.join(__dirname, 'hls');
 const processes = new Map();
 const stopping = new Set();
@@ -32,9 +55,6 @@ const logs = new Map(); // cameraId -> string[]
 const DEFAULT_FFMPEG_OPTIONS = {
   rtsp_transport: 'tcp',
   use_wallclock_as_timestamps: 1,
-  reconnect: 1,
-  reconnect_streamed: 1,
-  reconnect_delay_max: 5,
   fflags: 'genpts+discardcorrupt',
   avoid_negative_ts: 'make_zero',
   max_delay: 2,
@@ -92,21 +112,116 @@ function parseExtraArgs(str) {
   return str.trim().split(/\s+/).filter(Boolean);
 }
 
+// Options an admin may add via extra_input_args / extra_output_args. Each must be followed by
+// exactly one value. Nothing here takes a file name (e.g. -x264-params is excluded because its
+// stats= key writes files), so extra args can't add outputs or read/write arbitrary files.
+const SAFE_EXTRA_ARG_FLAGS = new Set([
+  '-analyzeduration',
+  '-probesize',
+  '-thread_queue_size',
+  '-err_detect',
+  '-vsync',
+  '-threads',
+  '-loglevel',
+  '-tag:v',
+  '-profile:v',
+  '-level',
+  '-maxrate',
+  '-bufsize',
+  '-b:v',
+  '-hls_segment_type',
+  '-hls_playlist_type',
+  '-start_number',
+  '-rtbufsize',
+  '-timeout',
+  '-rw_timeout',
+  '-metadata',
+]);
+
+// Conservative video filter chain: only simple, file-free filters with plain key=value args.
+// No movie/amovie, no paths, no ';' or '[' (filtergraph labels / multiple chains).
+const SAFE_VF_FILTER = '(?:scale|fps|format|crop|transpose|hflip|vflip|setsar|colorspace)(?:=[\\w=:.+-]*)?';
+const SAFE_VF_RE = new RegExp(`^${SAFE_VF_FILTER}(?:,${SAFE_VF_FILTER})*$`);
+
+function isSafeExtraArgValue(value) {
+  if (typeof value !== 'string' || value === '') return false;
+  if (value.includes('/') || value.includes('\\')) return false;
+  if (value.startsWith('-') && !/^-\d+(\.\d+)?$/.test(value)) return false;
+  return true;
+}
+
+function checkExtraArgs(str, field, errors) {
+  const tokens = parseExtraArgs(str);
+  const safe = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const flag = tokens[i];
+    if (!SAFE_EXTRA_ARG_FLAGS.has(flag)) {
+      errors.push(`${field}: option "${flag}" is not allowed`);
+      i += 1;
+      continue;
+    }
+    const value = tokens[i + 1];
+    if (value === undefined) {
+      errors.push(`${field}: option "${flag}" is missing a value`);
+      i += 1;
+      continue;
+    }
+    if (!isSafeExtraArgValue(value)) {
+      errors.push(`${field}: invalid value "${value}" for "${flag}"`);
+      // A non-numeric "-xxx" is probably the next option; re-examine it rather than consuming it
+      i += value.startsWith('-') ? 1 : 2;
+      continue;
+    }
+    safe.push(flag, value);
+    i += 2;
+  }
+  return safe;
+}
+
+/**
+ * Validate admin-supplied custom ffmpeg options (extra_input_args, extra_output_args, scale_vf).
+ * Returns the safe parts plus a list of errors; callers either reject on errors (admin save)
+ * or drop the invalid parts (buildFfmpegArgs).
+ */
+function validateCustomFfmpegOptions(options) {
+  const o = options || {};
+  const errors = [];
+  const extraInputArgs = checkExtraArgs(o.extra_input_args, 'Extra input args', errors);
+  const extraOutputArgs = checkExtraArgs(o.extra_output_args, 'Extra output args', errors);
+  let scaleVf = '';
+  if (o.scale_vf) {
+    const vf = String(o.scale_vf).trim();
+    if (SAFE_VF_RE.test(vf)) {
+      scaleVf = vf;
+    } else {
+      errors.push(`Scale filter: "${o.scale_vf}" is not allowed (only scale, fps, format, crop, transpose, hflip, vflip, setsar, colorspace with simple arguments)`);
+    }
+  }
+  return { extraInputArgs, extraOutputArgs, scaleVf, errors };
+}
+
 function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) {
   const o = { ...DEFAULT_FFMPEG_OPTIONS, ...options };
   const args = [];
+
+  // Defensive: options may predate validation on save; drop anything unsafe.
+  const custom = validateCustomFfmpegOptions(o);
+  for (const err of custom.errors) {
+    console.warn(`[ffmpeg] Ignoring unsafe custom option: ${err}`);
+  }
 
   pushOpt(args, '-rtsp_transport', o.rtsp_transport);
   if (o.use_wallclock_as_timestamps) pushOpt(args, '-use_wallclock_as_timestamps', '1');
   pushOpt(args, '-fflags', o.fflags);
   if (o.avoid_negative_ts) pushOpt(args, '-avoid_negative_ts', o.avoid_negative_ts);
   if (o.input_fps) pushOpt(args, '-r', o.input_fps);
-  pushOpt(args, '-stimeout', '5000000');
+  pushOpt(args, getRtspTimeoutFlag(), '5000000');
   pushOpt(args, '-max_delay', o.max_delay);
   pushOpt(args, '-flags', o.flags);
   pushOpt(args, '-i', rtspUrl);
 
-  const extraInput = parseExtraArgs(o.extra_input_args);
+  const extraInput = custom.extraInputArgs;
   for (let i = 0; i < extraInput.length; i++) args.push(extraInput[i]);
 
   // Frame rate mode: 'vfr' passes through camera timing as-is (FFmpeg 5.0+).
@@ -117,7 +232,7 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
   if (o.video_codec === 'copy') {
     pushOpt(args, '-c:v', 'copy');
   } else {
-    if (o.scale_vf) pushOpt(args, '-vf', o.scale_vf);
+    if (custom.scaleVf) pushOpt(args, '-vf', custom.scaleVf);
     if (o.color_range) pushOpt(args, '-color_range', o.color_range);
     pushOpt(args, '-c:v', o.video_codec || 'libx264');
     pushOpt(args, '-preset', o.preset);
@@ -147,7 +262,7 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
   pushOpt(args, '-hls_flags', o.hls_flags);
   pushOpt(args, '-hls_segment_filename', `${outBase}-%03d.ts`);
 
-  const extraOutput = parseExtraArgs(o.extra_output_args);
+  const extraOutput = custom.extraOutputArgs;
   for (let i = 0; i < extraOutput.length; i++) args.push(extraOutput[i]);
 
   args.push(`${outBase}.m3u8`);
@@ -155,26 +270,34 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
   // Optional: raw BGR24 frames to stdout for motion detection (avoids duplicate RTSP connection)
   if (enableMotionFrames) {
     pushOpt(args, '-f', 'rawvideo');
-    pushOpt(args, '-pix_fmt', 'bgr24');
+    // Grayscale (1 byte/px) at 320x180: motion.py only needs luma, and this is
+    // 1/12 of the bytes of 640x360 bgr24 through the pipe. Must match the
+    // MOTION_FRAME_WIDTH/HEIGHT/FORMAT env passed in motionManager.js.
+    pushOpt(args, '-pix_fmt', 'gray');
     pushOpt(args, '-r', '10'); // 10fps for motion detection (reduce CPU)
-    pushOpt(args, '-s', '640x360'); // lower resolution for motion detection
+    pushOpt(args, '-s', '320x180'); // lower resolution for motion detection
     args.push('pipe:1');
   }
 
   return args;
 }
 
+// Maps/Sets below are keyed by numeric camera id; callers may pass "1" (from URLs)
+// or 1 (from the DB), and a mismatch would spawn a duplicate ffmpeg for the same camera.
+function normalizeId(cameraId) {
+  const n = Number(cameraId);
+  return Number.isFinite(n) ? n : cameraId;
+}
+
 async function startStream(cameraId, camera, enableMotionFrames = false) {
+  cameraId = normalizeId(cameraId);
   const rtspUrl = typeof camera === 'string' ? camera : camera.rtsp_url;
   if (!db.validateRtspUrl(rtspUrl)) {
     console.error(`Camera ${cameraId}: refusing to start — invalid RTSP URL`);
     return null;
   }
 
-  if (enableMotionFrames) {
-    motionEnabled.add(cameraId);
-  } else if (!motionEnabled.has(cameraId)) {
-  }
+  if (enableMotionFrames) motionEnabled.add(cameraId);
   const shouldEnableMotion = motionEnabled.has(cameraId);
 
   await stopStream(cameraId);
@@ -230,6 +353,7 @@ async function startStream(cameraId, camera, enableMotionFrames = false) {
  * preventing multiple ffmpeg instances from writing to the same HLS files simultaneously.
  */
 async function stopStream(cameraId) {
+  cameraId = normalizeId(cameraId);
   const child = processes.get(cameraId);
   // (#11) Delete HLS files for this camera asynchronously to avoid blocking the event loop
   const prefix = `cam-${cameraId}`;
@@ -287,20 +411,20 @@ async function startAll({ motionCameraId = null } = {}) {
 }
 
 function isRunning(cameraId) {
-  const p = processes.get(cameraId);
+  const p = processes.get(normalizeId(cameraId));
   return p && !p.killed;
 }
 
 function getProcess(cameraId) {
-  return processes.get(cameraId);
+  return processes.get(normalizeId(cameraId));
 }
 
 function getLogs(cameraId) {
-  return logs.get(cameraId) || [];
+  return logs.get(normalizeId(cameraId)) || [];
 }
 
 function getStreamInfo(cameraId) {
-  const camLog = logs.get(cameraId) || [];
+  const camLog = logs.get(normalizeId(cameraId)) || [];
   const infoLines = camLog.filter((l) =>
     /Stream #\d|Stream mapping|->|Input #|Output #|profile |libx264|fps=/.test(l)
   );
@@ -329,4 +453,5 @@ module.exports = {
   DEFAULT_FFMPEG_OPTIONS,
   parseFfmpegOptions,
   buildFfmpegArgs,
+  validateCustomFfmpegOptions,
 };
