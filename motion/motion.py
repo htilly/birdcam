@@ -7,7 +7,7 @@ Sends bounding box data to the Node.js server via WebSocket.
 
 Two modes:
 1. RTSP mode (legacy): Opens RTSP stream directly with OpenCV
-2. Stdin mode (recommended): Reads raw BGR24 frames from stdin (piped from ffmpeg)
+2. Stdin mode (recommended): Reads raw gray (or legacy BGR24) frames from stdin (piped from ffmpeg)
    - Avoids duplicate RTSP connection
    - Lower resource usage
 
@@ -138,6 +138,8 @@ async def handle_relay_message(raw: str):
         try:
             updates = {}
             if "min_area" in msg:
+                # px² at the 640px reference width (see MotionDetector.prepare),
+                # so these bounds are independent of the actual frame size.
                 updates["min_area"] = _clamp(int(msg["min_area"]), 100, 200_000)
             if "threshold_fraction" in msg:
                 updates["threshold_fraction"] = _clamp(float(msg["threshold_fraction"]), 0.0001, 1.0)
@@ -219,60 +221,109 @@ async def relay_connection_loop(stop_event: asyncio.Event):
 # ---------------------------------------------------------------------------
 
 
-def build_detector():
-    """Create and return a fresh MOG2 background subtractor."""
-    return cv2.createBackgroundSubtractorMOG2(
-        history=config.BG_HISTORY,
-        varThreshold=50,
-        detectShadows=False,
-    )
+# Raw frame formats accepted in stdin mode -> bytes per pixel.
+# "gray" is what motionManager.js/streamManager.js send; "bgr24" is kept for
+# older setups and matches what cv2.VideoCapture returns in RTSP mode.
+FRAME_FORMATS = {"gray": 1, "bgr24": 3}
 
 
-def process_frame(frame, bg_subtractor) -> tuple[bool, list, int, int]:
+def _scaled_odd(size_at_ref: int, proc_w: int) -> int:
+    """Scale a kernel size given at config.REFERENCE_WIDTH to proc_w; odd, >= 1."""
+    return max(1, int(round(size_at_ref * proc_w / config.REFERENCE_WIDTH))) | 1
+
+
+class MotionDetector:
+    """MOG2 background subtractor plus per-frame-size processing parameters.
+
+    Everything that depends only on the frame size (resize target, blur size,
+    morphology kernel, area scale) is computed once per size, not per frame.
     """
-    Apply motion detection to a single frame.
+
+    def __init__(self):
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=config.BG_HISTORY,
+            varThreshold=50,
+            detectShadows=False,
+        )
+        self._frame_size = None
+
+    def prepare(self, w: int, h: int):
+        if self._frame_size == (w, h):
+            return
+        if w > config.PROCESS_WIDTH:
+            proc_w = config.PROCESS_WIDTH
+            proc_h = max(1, int(h * proc_w / w))
+            self.resize_to = (proc_w, proc_h)
+        else:
+            # Already at (or below) the processing size: skip cv2.resize.
+            proc_w, proc_h = w, h
+            self.resize_to = None
+        self.proc_area = proc_w * proc_h
+        # Processing px -> original frame px (box coordinates are reported in
+        # the coordinates of the frame we were given, with frame_w/frame_h).
+        self.inv_scale = w / proc_w
+        # min_area is configured in px² of a REFERENCE_WIDTH-wide frame (640x360),
+        # so existing values (admin UI sends 600/1500/4000) keep meaning the same
+        # region size at any frame/processing resolution: at 320px one processing
+        # pixel is 4 reference px².
+        self.area_to_ref = (config.REFERENCE_WIDTH / proc_w) ** 2
+        k = _scaled_odd(config.BLUR_KERNEL, proc_w)
+        self.blur_ksize = (k, k)
+        m = _scaled_odd(config.MORPH_KERNEL, proc_w)
+        self.morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (m, m))
+        self._frame_size = (w, h)
+        logger.info(
+            f"Processing {w}x{h} frames at {proc_w}x{proc_h} "
+            f"(blur {k}x{k}, morph {m}x{m})"
+        )
+
+
+def build_detector() -> MotionDetector:
+    """Create and return a fresh detector (MOG2 background subtractor)."""
+    return MotionDetector()
+
+
+def process_frame(frame, detector: MotionDetector) -> tuple[bool, list, int, int]:
+    """
+    Apply motion detection to a single frame (grayscale HxW or BGR HxWx3).
 
     Returns:
         (motion_detected, boxes, frame_w, frame_h)
-        boxes = list of {"x", "y", "w", "h", "area"} dicts
+        boxes = list of {"x", "y", "w", "h", "area"} dicts; x/y/w/h are in
+        frame pixels, area in reference (640-wide) px² like min_area.
     """
-    # Resize for processing speed
     h, w = frame.shape[:2]
-    scale = config.PROCESS_WIDTH / w
-    proc_w = config.PROCESS_WIDTH
-    proc_h = int(h * scale)
-    small = cv2.resize(frame, (proc_w, proc_h))
+    detector.prepare(w, h)
 
-    # Convert to grayscale, blur to reduce noise
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    # Resize for processing speed (only when larger than PROCESS_WIDTH)
+    small = cv2.resize(frame, detector.resize_to) if detector.resize_to else frame
 
-    # Ensure blur kernel is odd
-    k = config.BLUR_KERNEL | 1
-    blurred = cv2.GaussianBlur(gray, (k, k), 0)
+    # Convert to grayscale (unless already gray), blur to reduce noise
+    gray = small if small.ndim == 2 else cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, detector.blur_ksize, 0)
 
     # Background subtraction
-    fg_mask = bg_subtractor.apply(blurred)
+    fg_mask = detector.bg_subtractor.apply(blurred)
 
     # Morphological operations to fill holes and merge nearby regions
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    kernel = detector.morph_kernel
     fg_mask = cv2.dilate(fg_mask, kernel, iterations=config.DILATE_ITERATIONS)
     fg_mask = cv2.erode(fg_mask, kernel, iterations=1)
 
     # Find contours
     contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Scale factor to map coordinates back to original resolution
-    inv_scale = 1.0 / scale
+    inv_scale = detector.inv_scale
+    min_area = runtime_config["min_area"]
 
     boxes = []
-    total_motion_area = 0
-    frame_area = w * h
+    total_motion_area = 0.0  # in processing px²
 
     for cnt in contours:
-        area_small = cv2.contourArea(cnt)
-        area_orig = area_small * (inv_scale**2)
+        area_proc = cv2.contourArea(cnt)
+        area_ref = area_proc * detector.area_to_ref
 
-        if area_orig < runtime_config["min_area"]:
+        if area_ref < min_area:
             continue
 
         x, y, bw, bh = cv2.boundingRect(cnt)
@@ -283,35 +334,114 @@ def process_frame(frame, bg_subtractor) -> tuple[bool, list, int, int]:
                 "y": int(y * inv_scale),
                 "w": int(bw * inv_scale),
                 "h": int(bh * inv_scale),
-                "area": int(area_orig),
+                "area": int(area_ref),
             }
         )
-        total_motion_area += area_orig
+        total_motion_area += area_proc
 
-    motion_fraction = total_motion_area / frame_area if frame_area > 0 else 0
+    motion_fraction = total_motion_area / detector.proc_area if detector.proc_area > 0 else 0
     motion_detected = motion_fraction >= runtime_config["threshold_fraction"]
 
     return motion_detected, boxes, w, h
+
+
+class MotionEventThrottle:
+    """Decides which per-frame detection results are sent to the relay.
+
+    The relay (server.js) forwards every detector message to every browser, so
+    sending one per processed frame (~10/s) while nothing moves is wasted work.
+    A result is sent when:
+      - the state changes (motion starts, or stops -> clients clear overlays),
+      - motion continues and ACTIVE_EVENT_INTERVAL_SEC passed (box updates ~2/s),
+      - nothing moves and IDLE_EVENT_INTERVAL_SEC passed (liveness heartbeat).
+
+    INVARIANT: while motion continues, a detected=True event with boxes is sent
+    at least every ACTIVE_EVENT_INTERVAL_SEC (+ one frame period, ~0.6s total).
+    server.js starts/extends a recording on each such event and ends it after
+    recording_cooldown_sec (min 1s, default 3s) without one, so this interval
+    must stay well under 1s or recordings get cut short mid-motion.
+    """
+
+    def __init__(
+        self,
+        active_interval: float = config.ACTIVE_EVENT_INTERVAL_SEC,
+        idle_interval: float = config.IDLE_EVENT_INTERVAL_SEC,
+        clock=time.monotonic,
+    ):
+        self.active_interval = active_interval
+        self.idle_interval = idle_interval
+        self.clock = clock
+        self.last_active = None
+        self.last_sent = float("-inf")
+
+    def should_send(self, active: bool) -> bool:
+        now = self.clock()
+        interval = self.active_interval if active else self.idle_interval
+        if active != self.last_active or now - self.last_sent >= interval:
+            self.last_active = active
+            self.last_sent = now
+            return True
+        return False
+
+
+async def emit_motion_event(
+    throttle: MotionEventThrottle, motion_detected: bool, boxes: list,
+    fw: int, fh: int, camera_id: int,
+):
+    """Send a motion event to the relay if the throttle allows it."""
+    # "Active" mirrors what server.js records on: detected && boxes.length > 0.
+    if not throttle.should_send(bool(motion_detected and boxes)):
+        return
+    await send_to_relay(
+        {
+            "type": "motion",
+            "detected": motion_detected,
+            "boxes": boxes,
+            "frame_w": fw,
+            "frame_h": fh,
+            "camera_id": camera_id,
+            "timestamp": datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+        }
+    )
 
 
 async def run_motion_loop_stdin(
     loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event
 ):
     """
-    Motion detection loop reading raw BGR24 frames from stdin.
+    Motion detection loop reading raw frames (gray or bgr24) from stdin.
     Frames are piped from ffmpeg to avoid duplicate RTSP connection.
     """
     global last_notification_time
-    bg_subtractor = build_detector()
+    detector = build_detector()
+    throttle = MotionEventThrottle()
     warmup_frames = config.WARMUP_FRAMES
     warmup_update_interval = max(10, warmup_frames // 10)
     last_warmup_update = 0
 
+    # Defaults match the legacy 640x360 bgr24 pipe; motionManager.js sets these.
     frame_width = int(os.environ.get("MOTION_FRAME_WIDTH", "640"))
     frame_height = int(os.environ.get("MOTION_FRAME_HEIGHT", "360"))
-    frame_size = frame_width * frame_height * 3  # BGR24 = 3 bytes per pixel
+    frame_format = os.environ.get("MOTION_FRAME_FORMAT", "bgr24").strip().lower()
+    if frame_format not in FRAME_FORMATS:
+        logger.error(
+            f"Unsupported MOTION_FRAME_FORMAT {frame_format!r} "
+            f"(expected one of: {', '.join(FRAME_FORMATS)})"
+        )
+        return
+    bytes_per_pixel = FRAME_FORMATS[frame_format]
+    frame_size = frame_width * frame_height * bytes_per_pixel
+    frame_shape = (
+        (frame_height, frame_width)
+        if bytes_per_pixel == 1
+        else (frame_height, frame_width, bytes_per_pixel)
+    )
 
-    logger.info(f"Reading frames from stdin: {frame_width}x{frame_height} BGR24")
+    logger.info(
+        f"Reading frames from stdin: {frame_width}x{frame_height} {frame_format}"
+    )
     logger.info(f"Warming up background model ({warmup_frames} frames)...")
     await send_to_relay(
         {
@@ -354,14 +484,12 @@ async def run_motion_loop_stdin(
             frame_count += 1
 
             # Convert raw bytes to numpy array
-            frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape(
-                (frame_height, frame_width, 3)
-            )
+            frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape(frame_shape)
 
             # Skip detection during warmup (background model learning phase)
             if frame_count <= warmup_frames:
                 _, _, _, _ = await asyncio.to_thread(
-                    process_frame, frame, bg_subtractor
+                    process_frame, frame, detector
                 )
                 if (
                     frame_count - last_warmup_update >= warmup_update_interval
@@ -394,23 +522,13 @@ async def run_motion_loop_stdin(
                 continue
 
             motion_detected, boxes, fw, fh = await asyncio.to_thread(
-                process_frame, frame, bg_subtractor
+                process_frame, frame, detector
             )
 
-            # Build and broadcast motion event
-            event = {
-                "type": "motion",
-                "detected": motion_detected,
-                "boxes": boxes,
-                "frame_w": fw,
-                "frame_h": fh,
-                "camera_id": config.CAMERA_ID,
-                "timestamp": datetime.now(timezone.utc)
-                .isoformat(timespec="milliseconds")
-                .replace("+00:00", "Z"),
-            }
-
-            await send_to_relay(event)
+            # Broadcast motion event (throttled, see MotionEventThrottle)
+            await emit_motion_event(
+                throttle, motion_detected, boxes, fw, fh, config.CAMERA_ID
+            )
 
             # Fire push notification with cooldown
             if motion_detected and boxes:
@@ -449,7 +567,8 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
     Broadcasts motion events over WebSocket.
     """
     global last_notification_time
-    bg_subtractor = build_detector()
+    detector = build_detector()
+    throttle = MotionEventThrottle()
     warmup_frames = config.WARMUP_FRAMES
     warmup_update_interval = max(10, warmup_frames // 10)
     last_warmup_update = 0
@@ -500,7 +619,7 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
                 }
             )
             await asyncio.sleep(config.RECONNECT_DELAY_SEC)
-            bg_subtractor = build_detector()
+            detector = build_detector()
             warmup_frames = config.WARMUP_FRAMES
             last_warmup_update = 0
             continue
@@ -538,7 +657,7 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
                 # Skip detection during warmup (background model learning phase)
                 if frame_count <= warmup_frames:
                     _, _, _, _ = await asyncio.to_thread(
-                        process_frame, frame, bg_subtractor
+                        process_frame, frame, detector
                     )
                     if (
                         frame_count - last_warmup_update >= warmup_update_interval
@@ -571,23 +690,14 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
                     continue
 
                 motion_detected, boxes, fw, fh = await asyncio.to_thread(
-                    process_frame, frame, bg_subtractor
+                    process_frame, frame, detector
                 )
 
-                # Build and broadcast motion event
-                event = {
-                    "type": "motion",
-                    "detected": motion_detected,
-                    "boxes": boxes,
-                    "frame_w": fw,
-                    "frame_h": fh,
-                    "camera_id": camera_id or config.CAMERA_ID,
-                    "timestamp": datetime.now(timezone.utc)
-                    .isoformat(timespec="milliseconds")
-                    .replace("+00:00", "Z"),
-                }
-
-                await send_to_relay(event)
+                # Broadcast motion event (throttled, see MotionEventThrottle)
+                await emit_motion_event(
+                    throttle, motion_detected, boxes, fw, fh,
+                    camera_id or config.CAMERA_ID,
+                )
 
                 # Fire push notification with cooldown
                 if motion_detected and boxes:
@@ -653,7 +763,7 @@ async def run_motion_loop(loop: asyncio.AbstractEventLoop, stop_event: asyncio.E
             }
         )
         await asyncio.sleep(config.RECONNECT_DELAY_SEC)
-        bg_subtractor = build_detector()
+        detector = build_detector()
         warmup_frames = config.WARMUP_FRAMES
 
 
@@ -686,8 +796,15 @@ async def main():
     logger.info(f"Relay: {config.RELAY_URL}")
     if not use_stdin:
         logger.info(f"RTSP source: {config.RTSP_URL}")
-    logger.info(f"Min contour area: {config.MIN_CONTOUR_AREA}px\u00b2")
+    logger.info(
+        f"Min contour area: {config.MIN_CONTOUR_AREA}px\u00b2 "
+        f"(at {config.REFERENCE_WIDTH}px reference width)"
+    )
     logger.info(f"Notification cooldown: {config.NOTIFICATION_COOLDOWN_SEC}s")
+
+    # See config.CV_THREADS: single-threaded OpenCV is cheaper for small frames
+    # and leaves the other cores to ffmpeg on Pi-class hardware.
+    cv2.setNumThreads(config.CV_THREADS)
 
     loop = asyncio.get_event_loop()
 
