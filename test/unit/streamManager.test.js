@@ -198,7 +198,8 @@ describe('streamManager.buildFfmpegArgs', () => {
     assert.ok(args.includes('-f'));
     assert.ok(args.includes('rawvideo'));
     assert.ok(args.includes('-pix_fmt'));
-    assert.ok(args.includes('bgr24'));
+    assert.ok(args.includes('gray'));
+    assert.ok(args.includes('320x180'));
     assert.ok(args.includes('pipe:1'));
   });
 

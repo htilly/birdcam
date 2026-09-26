@@ -270,9 +270,12 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
   // Optional: raw BGR24 frames to stdout for motion detection (avoids duplicate RTSP connection)
   if (enableMotionFrames) {
     pushOpt(args, '-f', 'rawvideo');
-    pushOpt(args, '-pix_fmt', 'bgr24');
+    // Grayscale (1 byte/px) at 320x180: motion.py only needs luma, and this is
+    // 1/12 of the bytes of 640x360 bgr24 through the pipe. Must match the
+    // MOTION_FRAME_WIDTH/HEIGHT/FORMAT env passed in motionManager.js.
+    pushOpt(args, '-pix_fmt', 'gray');
     pushOpt(args, '-r', '10'); // 10fps for motion detection (reduce CPU)
-    pushOpt(args, '-s', '640x360'); // lower resolution for motion detection
+    pushOpt(args, '-s', '320x180'); // lower resolution for motion detection
     args.push('pipe:1');
   }
 
