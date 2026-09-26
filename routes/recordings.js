@@ -37,15 +37,12 @@ setInterval(() => {
 
 function stopPlayback(key, sess) {
   if (sess.process && !sess.process.killed) sess.process.kill('SIGKILL');
-  try {
-    fs.readdirSync(sess.hlsDir).forEach((f) => fs.unlinkSync(path.join(sess.hlsDir, f)));
-    fs.rmdirSync(sess.hlsDir);
-  } catch (_) {}
+  fs.promises.rm(sess.hlsDir, { recursive: true, force: true }).catch(() => {});
   playbackSessions.delete(key);
 }
 
 // GET /api/recordings/:cameraId?date=YYYY-MM-DD — list clips for date (no login required for public page)
-router.get('/:cameraId', (req, res) => {
+router.get('/:cameraId', async (req, res) => {
   const cam = db.getCamera(Number(req.params.cameraId));
   if (!cam) return res.status(404).json({ error: 'Camera not found' });
 
@@ -57,8 +54,9 @@ router.get('/:cameraId', (req, res) => {
   // Use motion_incidents as our "recordings index" for this camera + date.
   // We filter by local calendar date so it matches what the user picked.
   const incidents = db.listMotionIncidentsForDate(cam.id, dateStr);
-  const clips = incidents
-    .map((row) => {
+  const fileExists = (p) => fs.promises.access(p).then(() => true, () => false);
+  const clips = (await Promise.all(incidents
+    .map(async (row) => {
       if (!row.started_at || !row.ended_at) return null;
       const start = new Date(row.started_at);
       const end = new Date(row.ended_at);
@@ -72,11 +70,11 @@ router.get('/:cameraId', (req, res) => {
         sizeMB,
       };
       const filename = path.basename(row.file_path || '');
-      if (filename.endsWith('.mp4') && motionClipsDir && fs.existsSync(path.join(motionClipsDir, filename))) {
+      if (filename.endsWith('.mp4') && motionClipsDir && await fileExists(path.join(motionClipsDir, filename))) {
         clip.filename = filename;
       }
       return clip;
-    })
+    })))
     .filter(Boolean);
 
   res.json({ clips });

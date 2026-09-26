@@ -1559,7 +1559,7 @@ router.post('/snapshots/:id/delete', requireLogin, verifyCsrf, auditLog('snapsho
     // (#22) Use shared snapshotDir from app.locals instead of fragile __dirname/../data/snapshots
     const snapDir = req.app.locals.snapshotDir || path.join(__dirname, '..', 'data', 'snapshots');
     const filePath = path.join(snapDir, base);
-    try { fs.unlinkSync(filePath); } catch (_) {}
+    fs.promises.unlink(filePath).catch(() => {});
     db.deleteSnapshot(id);
   }
   res.redirect('/admin/snapshots?msg=Snapshot+deleted');
@@ -1576,7 +1576,7 @@ router.post('/snapshots/bulk-delete', requireLogin, verifyCsrf, auditLog('snapsh
     if (snap) {
       const base = path.basename(snap.filename);
       if (base === snap.filename && !base.includes('..')) {
-        try { fs.unlinkSync(path.join(snapDir, base)); } catch (_) {}
+        fs.promises.unlink(path.join(snapDir, base)).catch(() => {});
       }
     }
   }
@@ -1692,7 +1692,7 @@ router.post('/motion-clips/:id/delete', requireLogin, verifyCsrf, auditLog('moti
     if (incident.file_path) {
       const base = path.basename(incident.file_path);
       if (base === incident.file_path || !base.includes('..')) {
-        try { fs.unlinkSync(path.join(clipsDir, base)); } catch (_) {}
+        fs.promises.unlink(path.join(clipsDir, base)).catch(() => {});
       }
     }
     db.deleteMotionIncident(id);
@@ -1710,7 +1710,7 @@ router.post('/motion-clips/bulk-delete', requireLogin, verifyCsrf, auditLog('mot
     if (incident && incident.file_path) {
       const base = path.basename(incident.file_path);
       if (base === incident.file_path || !base.includes('..')) {
-        try { fs.unlinkSync(path.join(clipsDir, base)); } catch (_) {}
+        fs.promises.unlink(path.join(clipsDir, base)).catch(() => {});
       }
     }
   }
@@ -2057,7 +2057,8 @@ router.post('/reset-visitor-stats', requireLogin, verifyCsrf, auditLog('stats.re
 router.post('/reset-motion-stats', requireLogin, verifyCsrf, auditLog('stats.reset_motion'), (req, res) => {
   const filePaths = db.clearMotionRecordings();
   // Best-effort delete MP4 files from disk
-  filePaths.forEach(fp => { try { fs.unlinkSync(fp); } catch (_) {} });
+  // Fire-and-forget: deleting hundreds of clips must not block the event loop.
+  filePaths.forEach(fp => { fs.promises.unlink(fp).catch(() => {}); });
   res.redirect('/admin/settings?msg=Motion+recordings+cleared');
 });
 
