@@ -22,6 +22,29 @@ function getFpsModeSupported() {
   return fpsModeSupported;
 }
 
+// RTSP socket I/O timeout flag. FFmpeg 4.x calls it -stimeout; FFmpeg 5.0 removed
+// -stimeout and -timeout took over its meaning (socket I/O timeout, microseconds).
+// On 4.x, -timeout means something else (listen timeout, implies listen mode), so
+// we must pick the right one. Detected once from the rtsp demuxer's help output.
+// If detection fails (ffmpeg missing/broken), default to the modern -timeout:
+// streams cannot start without ffmpeg anyway, and every supported image ships 5+.
+let rtspTimeoutFlag = null;
+function getRtspTimeoutFlag() {
+  if (rtspTimeoutFlag !== null) return rtspTimeoutFlag;
+  let out = '';
+  try {
+    out = execSync('ffmpeg -hide_banner -h demuxer=rtsp 2>&1', {
+      timeout: 3000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    out = (e.stdout || '') + (e.stderr || '');
+  }
+  rtspTimeoutFlag = out.includes('-stimeout') ? '-stimeout' : '-timeout';
+  return rtspTimeoutFlag;
+}
+
 const hlsDir = path.join(__dirname, 'hls');
 const processes = new Map();
 const stopping = new Set();
@@ -101,7 +124,7 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
   pushOpt(args, '-fflags', o.fflags);
   if (o.avoid_negative_ts) pushOpt(args, '-avoid_negative_ts', o.avoid_negative_ts);
   if (o.input_fps) pushOpt(args, '-r', o.input_fps);
-  pushOpt(args, '-stimeout', '5000000');
+  pushOpt(args, getRtspTimeoutFlag(), '5000000');
   pushOpt(args, '-max_delay', o.max_delay);
   pushOpt(args, '-flags', o.flags);
   pushOpt(args, '-i', rtspUrl);

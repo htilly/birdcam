@@ -1,7 +1,17 @@
 node_modules
+**/node_modules
 .git
+.github
+.claude
 .env
+.env.*
 *.log
 data
 hls
+test
+coverage
+.nyc_output
+.test-history.json
+**/__pycache__
+**/*.pyc
 .DS_Store
