@@ -82,37 +82,52 @@ def get_first_camera_rtsp_from_db():
 
 
 def get_motion_settings_from_db(camera_id: int) -> dict:
-    """Return motion detection settings for a camera from DB, or defaults."""
-    settings = {
-        "min_area": config.MIN_CONTOUR_AREA,
-        "threshold_fraction": config.MOTION_THRESHOLD_FRACTION,
-        "blur_kernel": config.BLUR_KERNEL,
-        "cooldown_sec": config.NOTIFICATION_COOLDOWN_SEC,
-        "recording_cooldown_sec": config.RECORDING_COOLDOWN_SEC,
-    }
+    """Return the per-camera motion settings saved in the admin UI.
+
+    Only values actually set for the camera are returned (NULL columns mean
+    "use the default / current runtime value"), so applying the result never
+    resets settings the camera doesn't override. Values are clamped like
+    config_update messages. min_area and blur_kernel are in reference
+    (640-wide) px; motion_cooldown_sec is the recording cooldown.
+    """
+    settings = {}
     try:
         conn = sqlite3.connect(DB_PATH, timeout=2)
-        cur = conn.cursor()
-        row = cur.execute(
-            "SELECT motion_min_area, motion_threshold, motion_blur_kernel, motion_cooldown_sec FROM cameras WHERE id = ?",
-            (camera_id,),
-        ).fetchone()
-        conn.close()
+        try:
+            row = conn.execute(
+                "SELECT motion_min_area, motion_threshold, motion_blur_kernel, motion_cooldown_sec FROM cameras WHERE id = ?",
+                (camera_id,),
+            ).fetchone()
+        finally:
+            conn.close()
         if row:
             if row[0] is not None:
-                settings["min_area"] = int(row[0])
+                settings["min_area"] = _clamp(int(row[0]), 100, 200_000)
             if row[1] is not None:
-                settings["threshold_fraction"] = float(row[1])
+                settings["threshold_fraction"] = _clamp(float(row[1]), 0.0001, 1.0)
             if row[2] is not None:
-                k = int(row[2])
-                if k % 2 == 0:
-                    k += 1
-                settings["blur_kernel"] = k
+                settings["blur_kernel"] = _clamp(int(row[2]), 1, 101) | 1
             if row[3] is not None:
-                settings["recording_cooldown_sec"] = int(row[3])
+                settings["recording_cooldown_sec"] = _clamp(int(row[3]), 1, 60)
     except Exception as e:
         logger.warning(f"Could not read motion settings from DB: {e}")
     return settings
+
+
+def load_camera_motion_settings() -> bool:
+    """Apply the motion camera's saved settings to runtime_config."""
+    cam_id = os.environ.get("MOTION_CAMERA_ID")
+    if not cam_id:
+        cam_id, _ = get_first_camera_rtsp_from_db()
+    try:
+        cam_id = int(cam_id)
+    except (TypeError, ValueError):
+        return False
+    settings = get_motion_settings_from_db(cam_id)
+    if settings:
+        runtime_config.update(settings)
+        logger.info(f"Loaded motion settings for camera {cam_id}: {settings}")
+    return bool(settings)
 
 
 # Mutable config (can be updated by clients at runtime)
@@ -202,6 +217,12 @@ async def handle_relay_message(raw: str):
         if endpoint:
             push_notifier.remove_subscription(config.SUBSCRIPTIONS_FILE, endpoint)
             await send_to_relay({"type": "unsubscribed", "ok": True})
+
+    elif msg_type == "reload_settings":
+        # Sent by the Node server (never relayed from browsers) after an admin
+        # saves the camera's motion settings.
+        load_camera_motion_settings()
+        await send_to_relay({"type": "config", **runtime_config})
 
     elif msg_type == "ping":
         await send_to_relay({"type": "pong"})
@@ -852,6 +873,9 @@ async def main():
     # See config.CV_THREADS: single-threaded OpenCV is cheaper for small frames
     # and leaves the other cores to ffmpeg on Pi-class hardware.
     cv2.setNumThreads(config.CV_THREADS)
+
+    # Per-camera settings saved in the admin UI override the env/config defaults.
+    load_camera_motion_settings()
 
     loop = asyncio.get_event_loop()
 

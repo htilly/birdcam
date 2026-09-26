@@ -107,3 +107,56 @@ jobs:
           build-args: GIT_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Deploy to production on the self-hosted runner (the prod host) after every
+  # successful push to main. The prod host's own compose setup is used as-is
+  # (volumes, env, ports), so it must reference the Docker Hub image
+  # <user>/birdcam:latest (or :main).
+  #
+  # Repository variables (Settings → Secrets and variables → Actions → Variables):
+  #   DEPLOY_DIR    (required) directory on the prod host with its compose file
+  #   DEPLOY_URL    (optional) base URL to verify, default http://localhost:3000
+  #   DEPLOY_SERVICE (optional) compose service name, default birdcam
+  deploy:
+    runs-on: self-hosted
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Never run two deploys at once; a newer push waits for the running one.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    environment: production
+    timeout-minutes: 15
+
+    steps:
+      - name: Pull and restart
+        env:
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
+          SERVICE: ${{ vars.DEPLOY_SERVICE || 'birdcam' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_DIR" ] || [ ! -d "$DEPLOY_DIR" ]; then
+            echo "::error::Repository variable DEPLOY_DIR must point to the prod compose directory on the runner host (got '${DEPLOY_DIR}')"
+            exit 1
+          fi
+          cd "$DEPLOY_DIR"
+          docker compose pull "$SERVICE"
+          docker compose up -d "$SERVICE"
+          docker image prune -f
+
+      - name: Verify running version
+        env:
+          DEPLOY_URL: ${{ vars.DEPLOY_URL || 'http://localhost:3000' }}
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_SHA::7}"
+          for i in $(seq 1 30); do
+            running="$(curl -fsS "$DEPLOY_URL/api/build-info" 2>/dev/null | sed -n 's/.*"gitCommit":"\([0-9a-f]*\)".*/\1/p' || true)"
+            if [ "$running" = "$expected" ]; then
+              echo "Production is running $running"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Expected $expected at $DEPLOY_URL/api/build-info, got '${running:-no response}'. Does the prod compose file use the :latest/:main image?"
+          exit 1
