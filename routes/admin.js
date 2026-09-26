@@ -936,7 +936,7 @@ router.get('/cameras/:id/motion', requireLogin, (req, res) => {
           </div>
           <div class="form-field">
             <label for="motion-cooldown">Cooldown (sec)</label>
-            <input type="number" id="motion-cooldown" name="motion_cooldown_sec" value="${c.motion_cooldown_sec || ''}" min="1" max="300" placeholder="3">
+            <input type="number" id="motion-cooldown" name="motion_cooldown_sec" value="${c.motion_cooldown_sec || ''}" min="1" max="60" placeholder="3">
             <span class="form-field-hint">Time without motion before recording stops</span>
           </div>
         </div>
@@ -960,7 +960,8 @@ router.post('/cameras/:id/motion', requireLogin, verifyCsrf, auditLog('camera.mo
     min_area: motion_min_area ? Math.max(100, Math.min(50000, parseInt(motion_min_area))) : null,
     threshold: motion_threshold ? Math.max(0.001, Math.min(1, parseFloat(motion_threshold))) : null,
     blur_kernel: motion_blur_kernel ? Math.max(3, Math.min(51, parseInt(motion_blur_kernel))) : null,
-    cooldown_sec: motion_cooldown_sec ? Math.max(1, Math.min(300, parseInt(motion_cooldown_sec))) : null,
+    // Recording cooldown; the server and motion.py cap it at 60s.
+    cooldown_sec: motion_cooldown_sec ? Math.max(1, Math.min(60, parseInt(motion_cooldown_sec))) : null,
   };
   
   db.updateCamera(
@@ -979,7 +980,8 @@ router.post('/cameras/:id/motion', requireLogin, verifyCsrf, auditLog('camera.mo
     c.time_sync_interval_hours,
     motionSettings
   );
-  
+  if (req.app.locals.reloadMotionSettings) req.app.locals.reloadMotionSettings();
+
   res.redirect(`/admin/cameras/${id}/motion?msg=` + encodeURIComponent('Motion settings saved'));
 });
 

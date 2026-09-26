@@ -1324,6 +1324,12 @@ wss.on('connection', (ws, req) => {
 
 // Expose functions for admin routes
 app.locals.broadcastDeleteMessages = broadcastDeleteMessages;
+// Ask motion.py to re-read the camera's motion settings from the DB (after an admin save).
+app.locals.reloadMotionSettings = () => {
+  if (_motionDetector && _motionDetector.readyState === 1) {
+    _motionDetector.send(JSON.stringify({ type: 'reload_settings' }));
+  }
+};
 app.locals.broadcastClearChat = broadcastClearChat;
 app.locals.reloadChatMessages = reloadChatMessages;
 app.locals.chatMessages = chatMessages;
