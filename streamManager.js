@@ -32,9 +32,6 @@ const logs = new Map(); // cameraId -> string[]
 const DEFAULT_FFMPEG_OPTIONS = {
   rtsp_transport: 'tcp',
   use_wallclock_as_timestamps: 1,
-  reconnect: 1,
-  reconnect_streamed: 1,
-  reconnect_delay_max: 5,
   fflags: 'genpts+discardcorrupt',
   avoid_negative_ts: 'make_zero',
   max_delay: 2,
@@ -92,9 +89,104 @@ function parseExtraArgs(str) {
   return str.trim().split(/\s+/).filter(Boolean);
 }
 
+// Options an admin may add via extra_input_args / extra_output_args. Each must be followed by
+// exactly one value. Nothing here takes a file name (e.g. -x264-params is excluded because its
+// stats= key writes files), so extra args can't add outputs or read/write arbitrary files.
+const SAFE_EXTRA_ARG_FLAGS = new Set([
+  '-analyzeduration',
+  '-probesize',
+  '-thread_queue_size',
+  '-err_detect',
+  '-vsync',
+  '-threads',
+  '-loglevel',
+  '-tag:v',
+  '-profile:v',
+  '-level',
+  '-maxrate',
+  '-bufsize',
+  '-b:v',
+  '-hls_segment_type',
+  '-hls_playlist_type',
+  '-start_number',
+  '-rtbufsize',
+  '-timeout',
+  '-rw_timeout',
+  '-metadata',
+]);
+
+// Conservative video filter chain: only simple, file-free filters with plain key=value args.
+// No movie/amovie, no paths, no ';' or '[' (filtergraph labels / multiple chains).
+const SAFE_VF_FILTER = '(?:scale|fps|format|crop|transpose|hflip|vflip|setsar|colorspace)(?:=[\\w=:.+-]*)?';
+const SAFE_VF_RE = new RegExp(`^${SAFE_VF_FILTER}(?:,${SAFE_VF_FILTER})*$`);
+
+function isSafeExtraArgValue(value) {
+  if (typeof value !== 'string' || value === '') return false;
+  if (value.includes('/') || value.includes('\\')) return false;
+  if (value.startsWith('-') && !/^-\d+(\.\d+)?$/.test(value)) return false;
+  return true;
+}
+
+function checkExtraArgs(str, field, errors) {
+  const tokens = parseExtraArgs(str);
+  const safe = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const flag = tokens[i];
+    if (!SAFE_EXTRA_ARG_FLAGS.has(flag)) {
+      errors.push(`${field}: option "${flag}" is not allowed`);
+      i += 1;
+      continue;
+    }
+    const value = tokens[i + 1];
+    if (value === undefined) {
+      errors.push(`${field}: option "${flag}" is missing a value`);
+      i += 1;
+      continue;
+    }
+    if (!isSafeExtraArgValue(value)) {
+      errors.push(`${field}: invalid value "${value}" for "${flag}"`);
+      // A non-numeric "-xxx" is probably the next option; re-examine it rather than consuming it
+      i += value.startsWith('-') ? 1 : 2;
+      continue;
+    }
+    safe.push(flag, value);
+    i += 2;
+  }
+  return safe;
+}
+
+/**
+ * Validate admin-supplied custom ffmpeg options (extra_input_args, extra_output_args, scale_vf).
+ * Returns the safe parts plus a list of errors; callers either reject on errors (admin save)
+ * or drop the invalid parts (buildFfmpegArgs).
+ */
+function validateCustomFfmpegOptions(options) {
+  const o = options || {};
+  const errors = [];
+  const extraInputArgs = checkExtraArgs(o.extra_input_args, 'Extra input args', errors);
+  const extraOutputArgs = checkExtraArgs(o.extra_output_args, 'Extra output args', errors);
+  let scaleVf = '';
+  if (o.scale_vf) {
+    const vf = String(o.scale_vf).trim();
+    if (SAFE_VF_RE.test(vf)) {
+      scaleVf = vf;
+    } else {
+      errors.push(`Scale filter: "${o.scale_vf}" is not allowed (only scale, fps, format, crop, transpose, hflip, vflip, setsar, colorspace with simple arguments)`);
+    }
+  }
+  return { extraInputArgs, extraOutputArgs, scaleVf, errors };
+}
+
 function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) {
   const o = { ...DEFAULT_FFMPEG_OPTIONS, ...options };
   const args = [];
+
+  // Defensive: options may predate validation on save; drop anything unsafe.
+  const custom = validateCustomFfmpegOptions(o);
+  for (const err of custom.errors) {
+    console.warn(`[ffmpeg] Ignoring unsafe custom option: ${err}`);
+  }
 
   pushOpt(args, '-rtsp_transport', o.rtsp_transport);
   if (o.use_wallclock_as_timestamps) pushOpt(args, '-use_wallclock_as_timestamps', '1');
@@ -106,7 +198,7 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
   pushOpt(args, '-flags', o.flags);
   pushOpt(args, '-i', rtspUrl);
 
-  const extraInput = parseExtraArgs(o.extra_input_args);
+  const extraInput = custom.extraInputArgs;
   for (let i = 0; i < extraInput.length; i++) args.push(extraInput[i]);
 
   // Frame rate mode: 'vfr' passes through camera timing as-is (FFmpeg 5.0+).
@@ -117,7 +209,7 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
   if (o.video_codec === 'copy') {
     pushOpt(args, '-c:v', 'copy');
   } else {
-    if (o.scale_vf) pushOpt(args, '-vf', o.scale_vf);
+    if (custom.scaleVf) pushOpt(args, '-vf', custom.scaleVf);
     if (o.color_range) pushOpt(args, '-color_range', o.color_range);
     pushOpt(args, '-c:v', o.video_codec || 'libx264');
     pushOpt(args, '-preset', o.preset);
@@ -147,7 +239,7 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
   pushOpt(args, '-hls_flags', o.hls_flags);
   pushOpt(args, '-hls_segment_filename', `${outBase}-%03d.ts`);
 
-  const extraOutput = parseExtraArgs(o.extra_output_args);
+  const extraOutput = custom.extraOutputArgs;
   for (let i = 0; i < extraOutput.length; i++) args.push(extraOutput[i]);
 
   args.push(`${outBase}.m3u8`);
@@ -329,4 +421,5 @@ module.exports = {
   DEFAULT_FFMPEG_OPTIONS,
   parseFfmpegOptions,
   buildFfmpegArgs,
+  validateCustomFfmpegOptions,
 };
