@@ -286,6 +286,7 @@
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         manifestRetries = 0;
         videoOverlay.classList.add('hidden');
+        startPlayback();
       });
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal) {
@@ -309,12 +310,44 @@
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = src;
       videoOverlay.classList.add('hidden');
+      startPlayback();
     } else {
       videoOverlay.classList.remove('hidden');
       videoOverlay.querySelector('p').textContent = 'HLS not supported in this browser.';
     }
     renderTabs();
   }
+
+  // The `autoplay` attribute alone is unreliable with hls.js/MSE (playback is
+  // attempted before any media is buffered, and not retried after the source
+  // is swapped), so start playback explicitly once the manifest is loaded.
+  // Autoplay is only allowed muted; if the browser still blocks it, start on
+  // the visitor's first interaction anywhere on the page.
+  let pendingGesturePlay = false;
+  function startPlayback() {
+    video.muted = true;
+    const p = video.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch((err) => {
+        if (err && err.name === 'NotAllowedError' && !pendingGesturePlay) {
+          pendingGesturePlay = true;
+          const resume = () => {
+            pendingGesturePlay = false;
+            ['pointerdown', 'keydown', 'touchstart'].forEach((ev) =>
+              document.removeEventListener(ev, resume, true));
+            video.play().catch(() => {});
+          };
+          ['pointerdown', 'keydown', 'touchstart'].forEach((ev) =>
+            document.addEventListener(ev, resume, true));
+        }
+      });
+    }
+  }
+
+  // Resume a live stream the browser paused while the tab was in the background.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && video.paused && (hls || video.src) && !isPlaybackMode) startPlayback();
+  });
 
   function destroyHls() {
     if (hls) {
