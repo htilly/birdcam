@@ -389,10 +389,13 @@ router.get('/login', (req, res) => {
   `));
 });
 
-router.post('/login', verifyCsrf, (req, res) => {
+router.post('/login', verifyCsrf, async (req, res) => {
   const { username, password } = req.body || {};
   const user = db.findUserByUsername(username);
-  if (!user || !user.password_hash || !db.verifyPassword(password, user.password_hash)) {
+  // Async bcrypt keeps the event loop (live streams, chat) responsive during logins;
+  // always run a comparison so response time doesn't reveal which usernames exist.
+  const passwordOk = await db.verifyPasswordAsync(password, user && user.password_hash);
+  if (!user || !user.password_hash || !passwordOk) {
     // Log failed login attempt
     db.addAuditLog(null, username || 'unknown', 'auth.login.failed', 'Path: /login', req.ip, req.requestId);
     return res.redirect('/admin/login?msg=Invalid+username+or+password');

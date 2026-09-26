@@ -238,18 +238,16 @@ app.use(express.static(path.join(__dirname, 'public'), {
 // Browsers request /favicon.ico by default; serve existing PNG to avoid 404
 const faviconPath = path.join(__dirname, 'public', 'favicon.png');
 app.get('/favicon.ico', (req, res) => {
-  if (fs.existsSync(faviconPath)) {
-    res.type('png');
-    res.sendFile(faviconPath);
-  } else {
-    res.status(204).end();
-  }
+  res.type('png');
+  res.sendFile(faviconPath, (err) => {
+    if (err && !res.headersSent) res.status(204).end();
+  });
 });
 
 const recordingsRouter = recordingsRoutes(motionClipsDir);
 
 // HLS streams — optionally require auth; start stream on demand if m3u8 missing
-app.use('/hls', (req, res, next) => {
+app.use('/hls', async (req, res, next) => {
   if (db.getSetting('require_auth_streams') === 'true') {
     if (!req.session || !req.session.userId) {
       return res.status(401).json({ error: 'Authentication required' });
@@ -262,7 +260,9 @@ app.use('/hls', (req, res, next) => {
   if (m && req.method === 'GET') {
     const cameraId = Number(m[1]);
     const m3u8Path = path.join(streamManager.hlsDir, `cam-${cameraId}.m3u8`);
-    if (!fs.existsSync(m3u8Path)) {
+    // Polled by every viewer every couple of seconds — use async access, not existsSync.
+    const exists = await fsPromises.access(m3u8Path).then(() => true, () => false);
+    if (!exists) {
       if (!streamManager.isRunning(cameraId)) {
         const cam = db.getCamera(cameraId);
         if (cam) {
@@ -642,7 +642,7 @@ app.delete('/api/motion-clips/:id', (req, res) => {
   if (incident.file_path) {
     const base = path.basename(incident.file_path);
     if (base === incident.file_path || !base.includes('..')) {
-      try { fs.unlinkSync(path.join(motionClipsDir, base)); } catch (_) {}
+      fsPromises.unlink(path.join(motionClipsDir, base)).catch(() => {});
     }
   }
   db.deleteMotionIncident(id);
@@ -655,9 +655,10 @@ app.get('/clips/:filename', (req, res) => {
   if (!filename.endsWith('.mp4') || !/^[\w\-]+\.mp4$/.test(filename)) {
     return res.status(400).send('Invalid filename');
   }
-  const filePath = path.join(motionClipsDir, filename);
-  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
-  res.sendFile(filePath);
+  // sendFile stats the file itself; a missing file surfaces as ENOENT (no sync check).
+  res.sendFile(path.join(motionClipsDir, filename), (err) => {
+    if (err && !res.headersSent) res.status(err.status || 404).send('Not found');
+  });
 });
 
 const server = http.createServer(app);
@@ -686,13 +687,11 @@ function isChatDisabled() {
   return _chatDisabledCache;
 }
 
-function sanitizeChat(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
+// Chat text is stored and sent as plain text; every renderer (public chat, admin
+// chat page) HTML-escapes at display time. Escaping here as well double-escaped
+// messages ("I <3 birds" showed as "I &lt;3 birds"). Only strip control characters.
+function cleanChatText(str, maxLen) {
+  return String(str).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, maxLen).trim();
 }
 
 // Strip server-only fields (ip_address) before sending chat messages to viewers.
@@ -745,6 +744,14 @@ function broadcastDeleteMessages(ids) {
 // Broadcast clear all messages to all clients
 function broadcastClearChat() {
   const payload = JSON.stringify({ type: 'clear_chat' });
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) client.send(payload);
+  });
+}
+
+// Serialize once, not once per client.
+function broadcastSnapshots() {
+  const payload = JSON.stringify({ type: 'snapshots', ...buildSnapshotsPayload() });
   wss.clients.forEach((client) => {
     if (client.readyState === 1) client.send(payload);
   });
@@ -952,7 +959,7 @@ function stopMotionIncident(cameraId, endedAtIso) {
         .slice(-25)
         .join('\n');
       console.warn(`[motion-ws] Recording produced 0 bytes, removing incident ${state.incidentId}. FFmpeg stderr (last lines):\n${stderr || '(none)'}`);
-      try { fs.unlinkSync(state.filePath); } catch (_) {}
+      fsPromises.unlink(state.filePath).catch(() => {});
       db.deleteMotionIncident(state.incidentId);
     } else {
       enforceMotionClipRetention();
@@ -1007,7 +1014,7 @@ function enforceMotionClipRetention() {
       const overSize = maxBytes > 0 && bytes > maxBytes;
       if (!overCount && !overSize) break;
 
-      try { fs.unlinkSync(clip.file_path); } catch (_) {}
+      fsPromises.unlink(clip.file_path).catch(() => {});
       idsToDelete.push(clip.id);
       count -= 1;
       bytes -= clip.size_bytes || 0;
@@ -1282,8 +1289,8 @@ wss.on('connection', (ws, req) => {
         }
         
         const msg = {
-          nickname: sanitizeChat(String(data.nickname).slice(0, 30).trim()),
-          text: sanitizeChat(String(data.text).slice(0, 500).trim()),
+          nickname: cleanChatText(data.nickname, 30),
+          text: cleanChatText(data.text, 500),
           time: new Date().toISOString(),
           ip_address: ws._clientIp,
         };
@@ -1335,10 +1342,7 @@ app.post('/api/snapshots', snapshotRateLimitMiddleware, async (req, res) => {
     const nick = String(nickname || 'Guest').slice(0, 30).trim() || 'Guest';
     const cam = String(cameraName || '').slice(0, 60).trim();
     db.addSnapshot(filename, nick, cam);
-    const payload = buildSnapshotsPayload();
-    wss.clients.forEach(client => {
-      if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', ...payload }));
-    });
+    broadcastSnapshots();
     res.json({ ok: true, url: `/snapshots/${filename}` });
   } catch (err) {
     console.error('[snapshot] Write error:', err.message);
@@ -1363,10 +1367,7 @@ app.post('/api/admin/snapshots/:id/star', requireSameOriginApi, auditLog('api.sn
   const id = Number(req.params.id);
   const starred = (req.body || {}).starred !== false && (req.body || {}).starred !== 'false';
   db.setSnapshotStarred(id, starred);
-  const payload = buildSnapshotsPayload();
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', ...payload }));
-  });
+  broadcastSnapshots();
   res.json({ ok: true, starred });
 });
 
@@ -1378,13 +1379,10 @@ app.post('/api/admin/snapshots/:id/delete', requireSameOriginApi, auditLog('api.
     const base = path.basename(snap.filename);
     if (base !== snap.filename || base.includes('..')) return res.status(400).json({ error: 'Invalid snapshot' });
     const filePath = path.join(snapshotDir, base);
-    try { fs.unlinkSync(filePath); } catch (_) {}
+    fsPromises.unlink(filePath).catch(() => {});
     db.deleteSnapshot(id);
   }
-  const payload = buildSnapshotsPayload();
-  wss.clients.forEach(client => {
-    if (client.readyState === 1) client.send(JSON.stringify({ type: 'snapshots', ...payload }));
-  });
+  broadcastSnapshots();
   res.json({ ok: true });
 });
 
