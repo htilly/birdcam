@@ -52,6 +52,10 @@ const motionEnabled = new Set();
 const MAX_LOG_LINES = 200;
 const logs = new Map(); // cameraId -> string[]
 
+// Upper bound for the motion detector's frame rate, used when the camera's
+// input_fps is unknown. Always clamped down to the camera rate when known.
+const DEFAULT_MOTION_FPS = 10;
+
 const DEFAULT_FFMPEG_OPTIONS = {
   rtsp_transport: 'tcp',
   use_wallclock_as_timestamps: 1,
@@ -79,6 +83,8 @@ const DEFAULT_FFMPEG_OPTIONS = {
   fps_mode: 'vfr',
   extra_input_args: '',
   extra_output_args: '',
+  // 0 / unset means "match the camera" (see getMotionFps).
+  motion_fps: 0,
 };
 
 function ensureHlsDir() {
@@ -201,6 +207,21 @@ function validateCustomFfmpegOptions(options) {
   return { extraInputArgs, extraOutputArgs, scaleVf, errors };
 }
 
+/**
+ * Frames per second to feed the motion detector, clamped to the camera's own
+ * input rate so ffmpeg never pads the stream with duplicate frames.
+ * Falls back to DEFAULT_MOTION_FPS when neither value is usable.
+ */
+function getMotionFps(options) {
+  const o = options || {};
+  const cameraFps = Number(o.input_fps);
+  const wanted = Number(o.motion_fps) || DEFAULT_MOTION_FPS;
+  if (!Number.isFinite(cameraFps) || cameraFps <= 0) {
+    return Number.isFinite(wanted) && wanted > 0 ? wanted : DEFAULT_MOTION_FPS;
+  }
+  return Math.min(wanted, cameraFps);
+}
+
 function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) {
   const o = { ...DEFAULT_FFMPEG_OPTIONS, ...options };
   const args = [];
@@ -274,7 +295,13 @@ function buildFfmpegArgs(rtspUrl, outBase, options, enableMotionFrames = false) 
     // 1/12 of the bytes of 640x360 bgr24 through the pipe. Must match the
     // MOTION_FRAME_WIDTH/HEIGHT/FORMAT env passed in motionManager.js.
     pushOpt(args, '-pix_fmt', 'gray');
-    pushOpt(args, '-r', '10'); // 10fps for motion detection (reduce CPU)
+    // Motion frame rate. Asking for more frames per second than the camera
+    // actually sends does not produce more information -- ffmpeg just duplicates
+    // frames to pad the rate, and motion.py then does real work (blur, bg
+    // subtraction, contours) on frames identical to ones it has already seen.
+    // So clamp to the camera's own rate. motion_fps may be set lower than the
+    // camera rate to save CPU; it is never allowed to exceed it.
+    pushOpt(args, '-r', String(getMotionFps(o)));
     pushOpt(args, '-s', '320x180'); // lower resolution for motion detection
     args.push('pipe:1');
   }
@@ -454,4 +481,5 @@ module.exports = {
   parseFfmpegOptions,
   buildFfmpegArgs,
   validateCustomFfmpegOptions,
+  getMotionFps,
 };
