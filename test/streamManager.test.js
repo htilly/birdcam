@@ -4,6 +4,7 @@ const {
   DEFAULT_FFMPEG_OPTIONS,
   parseFfmpegOptions,
   buildFfmpegArgs,
+  getMotionFps,
 } = require('../streamManager');
 
 describe('streamManager.parseFfmpegOptions', () => {
@@ -83,5 +84,54 @@ describe('streamManager.buildFfmpegArgs', () => {
     const idx = args.indexOf('-hls_segment_filename');
     assert.ok(args[idx + 1].startsWith(outBase));
     assert.ok(args[idx + 1].includes('%03d.ts'));
+  });
+});
+
+
+describe('streamManager.getMotionFps', () => {
+  it('matches the camera rate rather than exceeding it', () => {
+    assert.strictEqual(getMotionFps({ input_fps: 8 }), 8);
+  });
+
+  it('never exceeds the camera rate even when asked to', () => {
+    assert.strictEqual(getMotionFps({ input_fps: 8, motion_fps: 25 }), 8);
+  });
+
+  it('allows a lower rate than the camera', () => {
+    assert.strictEqual(getMotionFps({ input_fps: 8, motion_fps: 4 }), 4);
+  });
+
+  it('falls back to the default when input_fps is unknown', () => {
+    assert.strictEqual(getMotionFps({}), 10);
+    assert.strictEqual(getMotionFps({ input_fps: 0 }), 10);
+    assert.strictEqual(getMotionFps({ input_fps: 'nonsense' }), 10);
+  });
+});
+
+describe('streamManager.buildFfmpegArgs motion frame output', () => {
+  const rtspUrl = 'rtsp://192.168.1.1:554/stream1';
+  const outBase = '/tmp/hls/cam-1';
+
+  const motionRate = (args) => {
+    // the motion output is the trailing rawvideo section ending in pipe:1
+    const tail = args.slice(args.lastIndexOf('-f', args.indexOf('pipe:1')));
+    return tail[tail.indexOf('-r') + 1];
+  };
+
+  it('feeds motion frames at the camera rate, not a padded one', () => {
+    const args = buildFfmpegArgs(rtspUrl, outBase, { input_fps: 8 }, true);
+    assert.ok(args.includes('pipe:1'));
+    assert.strictEqual(motionRate(args), '8');
+  });
+
+  it('still emits 320x180 gray frames', () => {
+    const args = buildFfmpegArgs(rtspUrl, outBase, { input_fps: 8 }, true);
+    assert.ok(args.includes('gray'));
+    assert.ok(args.includes('320x180'));
+  });
+
+  it('omits the motion output entirely when not requested', () => {
+    const args = buildFfmpegArgs(rtspUrl, outBase, { input_fps: 8 }, false);
+    assert.ok(!args.includes('pipe:1'));
   });
 });
