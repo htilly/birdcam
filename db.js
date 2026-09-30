@@ -296,20 +296,21 @@ function migrate() {
     `);
   }
 
-  // Migrate hls_time and hls_list_size to low-latency defaults in stored ffmpeg_options.
-  // Cameras created before this change may have hls_time:2, hls_list_size:3 saved in the DB
-  // which would override the new DEFAULT_FFMPEG_OPTIONS values.
-  const cameras = d.prepare('SELECT id, ffmpeg_options FROM cameras').all();
-  const updateOpts = d.prepare('UPDATE cameras SET ffmpeg_options = ? WHERE id = ?');
-  for (const cam of cameras) {
-    try {
-      const opts = cam.ffmpeg_options ? JSON.parse(cam.ffmpeg_options) : {};
-      let changed = false;
-      if (opts.hls_time === 2)      { opts.hls_time = 1;      changed = true; }
-      if (opts.hls_list_size === 3) { opts.hls_list_size = 2; changed = true; }
-      if (changed) updateOpts.run(JSON.stringify(opts), cam.id);
-    } catch (_) {}
-  }
+  // NOTE: there used to be a block here (5b733a8) that rewrote stored
+  // ffmpeg_options hls_time 2 -> 1 and hls_list_size 3 -> 2 on startup. It was
+  // meant as a one-off data migration for cameras predating a default change,
+  // but it sat in migrate() with no guard, so it re-ran on *every* boot. Since a
+  // stored value is indistinguishable from a deliberate one, it silently reverted
+  // anything an admin set hls_time to 2 in the UI -- the setting never stuck.
+  //
+  // It is removed rather than guarded because it is also obsolete: the defaults it
+  // was migrating towards no longer exist. DEFAULT_FFMPEG_OPTIONS is currently
+  // hls_time: 2, hls_list_size: 6, so the block was dragging cameras away from the
+  // current defaults, not towards them. There is no install left for it to fix.
+  //
+  // Rule for anything added here: never rewrite a stored per-camera option
+  // unconditionally. Either gate it on a schema change (see the rtsp_host split
+  // above) or on a run-once flag in settings (see chat_plaintext_migrated below).
 
   // WebAuthn credentials table
   const webauthnTable = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='webauthn_credentials'").get();
