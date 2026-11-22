@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 // (#12) Default to production if NODE_ENV is not set — prevents leaking
 // stack traces and internal details in error responses.
@@ -155,6 +155,9 @@ app.use(helmet({
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Express 5 leaves req.body undefined when no parser matched (Express 4 gave {}).
+// Routes read req.body.x directly, so keep the old default.
+app.use((req, res, next) => { if (req.body === undefined) req.body = {}; next(); });
 app.use(cookieParser());
 
 // Session configuration — middleware is swappable so secret can be rotated at runtime.

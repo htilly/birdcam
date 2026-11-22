@@ -1,7 +1,7 @@
 #
 # Stage 1: build dependencies (compilers and headers stay in this stage)
 #
-FROM node:22-bookworm-slim AS build
+FROM node:26-trixie-slim AS build
 
 # apt install with retries for transient network/mirror failures.
 # Fails the build if all attempts fail.
@@ -17,7 +17,7 @@ RUN set -eux; \
 
 WORKDIR /app
 
-# Motion detector (Python) dependencies in a venv (Debian 12 enforces PEP 668,
+# Motion detector (Python) dependencies in a venv (Debian enforces PEP 668,
 # so system-wide pip installs are refused). motion/motion.py uses OpenCV etc.
 COPY motion/requirements.txt ./motion/requirements.txt
 RUN python3 -m venv /opt/venv \
@@ -30,7 +30,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 #
 # Stage 2: runtime
 #
-FROM node:22-bookworm-slim
+FROM node:26-trixie-slim
 
 RUN set -eux; \
     echo 'exit 101' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d; \
