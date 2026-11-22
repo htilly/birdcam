@@ -1,14 +1,19 @@
 const db = require('./db');
 const onvif = require('./onvif');
+const timeZone = require('./timeZone');
 
 const HOUR_MS = 60 * 60 * 1000;
 // Delay before the first sync after (re)scheduling, so streams/ONVIF are up first.
 const INITIAL_SYNC_DELAY_MS = 60 * 1000;
-const scheduledJobs = new Map(); // cameraId -> { initial, interval } timers
+// How often to check whether the camera's UTC offset changed (DST switch).
+const OFFSET_CHECK_MS = 60 * 60 * 1000;
+const scheduledJobs = new Map(); // cameraId -> { initial, interval, offsetCheck } timers
+const lastSyncedOffset = new Map(); // cameraId -> UTC offset (minutes) sent at last sync
 
 function clearJob(job) {
   clearTimeout(job.initial);
   clearInterval(job.interval);
+  clearInterval(job.offsetCheck);
 }
 
 function scheduleTimeSync(cameraId, intervalHours) {
@@ -30,9 +35,27 @@ function scheduleTimeSync(cameraId, intervalHours) {
   // Sync shortly after start too: the container is redeployed often, and an
   // interval-only timer restarts from zero each time, so it may never fire.
   // setInterval rather than cron: cron "*/N" in the hour field only works for N < 24 dividing 24
+  // Re-sync as soon as the zone's offset changes (summer/winter time), since the
+  // camera gets a fixed offset rather than DST rules.
+  const checkOffset = () => {
+    if (!lastSyncedOffset.has(cameraId)) return;
+    const camera = db.getCamera(cameraId);
+    if (!camera) return;
+    const tz = timeZone.resolveTimeZone(camera.time_zone);
+    const offset = timeZone.offsetMinutes(tz);
+    if (offset !== lastSyncedOffset.get(cameraId)) {
+      // Record now so later checks don't start another sync while this one runs;
+      // if it fails, the regular interval retries.
+      lastSyncedOffset.set(cameraId, offset);
+      console.log(`[timeSync] UTC offset changed for camera ${cameraId} (${tz}), re-syncing`);
+      run();
+    }
+  };
+
   const job = {
     initial: setTimeout(run, INITIAL_SYNC_DELAY_MS),
     interval: setInterval(run, intervalHours * HOUR_MS),
+    offsetCheck: setInterval(checkOffset, OFFSET_CHECK_MS),
   };
   for (const t of Object.values(job)) {
     if (typeof t.unref === 'function') t.unref();
@@ -58,6 +81,20 @@ function stopAll() {
   console.log('[timeSync] Stopped all time sync jobs');
 }
 
+// Sets the camera clock to server time and its time zone to the camera's
+// configured zone (or the server's). Throws on failure; returns what was set.
+async function performTimeSync(camera) {
+  const onvifCreds = db.getOnvifCredentials(camera);
+  const cam = await onvif.createCam(camera.rtsp_host, onvifCreds.port, onvifCreds.username, onvifCreds.password);
+  const beforeTime = await onvif.getSystemDateAndTime(cam);
+  const serverTime = new Date();
+  const tz = timeZone.resolveTimeZone(camera.time_zone);
+  const posixTz = timeZone.posixFixedOffset(tz, serverTime);
+  await onvif.setSystemDateAndTime(cam, serverTime, posixTz);
+  lastSyncedOffset.set(camera.id, timeZone.offsetMinutes(tz, serverTime));
+  return { beforeTime, serverTime, tz, posixTz };
+}
+
 async function syncCameraTime(cameraId) {
   const camera = db.getCamera(cameraId);
   if (!camera) {
@@ -66,14 +103,9 @@ async function syncCameraTime(cameraId) {
   }
 
   try {
-    const host = camera.rtsp_host;
-    const onvifCreds = db.getOnvifCredentials(camera);
-    const cam = await onvif.createCam(host, onvifCreds.port, onvifCreds.username, onvifCreds.password);
-    const beforeTime = await onvif.getSystemDateAndTime(cam);
-    const serverTime = new Date();
-    await onvif.setSystemDateAndTime(cam, serverTime);
-    const fmt = (d) => d ? d.toLocaleString('sv-SE') : 'unknown';
-    console.log(`[timeSync] Camera ${cameraId} (${camera.display_name}): synced ${fmt(beforeTime)} -> ${fmt(serverTime)}`);
+    const { beforeTime, serverTime, tz, posixTz } = await performTimeSync(camera);
+    const fmt = (d) => d ? d.toISOString() : 'unknown';
+    console.log(`[timeSync] Camera ${cameraId} (${camera.display_name}): synced ${fmt(beforeTime)} -> ${fmt(serverTime)}, zone ${tz} (${posixTz})`);
   } catch (err) {
     console.error(`[timeSync] Failed to sync time for camera ${cameraId} (${camera.display_name}):`, err.message);
   }
@@ -107,6 +139,7 @@ module.exports = {
   scheduleTimeSync,
   stopTimeSync,
   stopAll,
+  performTimeSync,
   syncCameraTime,
   initializeFromDb,
   restartScheduler,
