@@ -137,13 +137,17 @@ async function getSystemDateAndTime(cam) {
   }
 }
 
-async function setSystemDateAndTime(cam, date) {
+// timezone: optional POSIX TZ string (e.g. "CET-1"); the camera uses it for its
+// on-screen clock. Without it the camera keeps whatever zone it already had.
+async function setSystemDateAndTime(cam, date, timezone) {
   try {
-    await cam.setSystemDateAndTime({
+    const options = {
       dateTimeType: 'Manual',
       daylightSavings: false,
       dateTime: date,
-    });
+    };
+    if (timezone) options.timezone = timezone;
+    await cam.setSystemDateAndTime(options);
     return true;
   } catch (err) {
     throw new Error(`Failed to set system time: ${err.message}`);

@@ -163,6 +163,10 @@ function migrate() {
   if (!camCols.includes('time_sync_interval_hours')) {
     d.exec(`ALTER TABLE cameras ADD COLUMN time_sync_interval_hours INTEGER NOT NULL DEFAULT 24`);
   }
+  // IANA zone (e.g. Europe/Stockholm) set on the camera at sync; NULL = server's zone
+  if (!camCols.includes('time_zone')) {
+    d.exec(`ALTER TABLE cameras ADD COLUMN time_zone TEXT DEFAULT NULL`);
+  }
 
   // Motion detection settings per camera
   if (!camCols.includes('motion_min_area')) {
@@ -759,6 +763,10 @@ function deleteCamera(id) {
   getDb().prepare('DELETE FROM cameras WHERE id = ?').run(id);
 }
 
+function setCameraTimeZone(id, tz) {
+  getDb().prepare('UPDATE cameras SET time_zone = ? WHERE id = ?').run(tz || null, id);
+}
+
 function getCamerasWithTimeSyncEnabled() {
   return getDb().prepare('SELECT * FROM cameras WHERE time_sync_enabled = 1').all();
 }
@@ -1104,6 +1112,7 @@ module.exports = {
   updateCamera,
   deleteCamera,
   getCamerasWithTimeSyncEnabled,
+  setCameraTimeZone,
   getSetting,
   setSetting,
   getAllSettings,

@@ -11,6 +11,7 @@ const { requireLogin, requireSetup, requireNoSetup } = require('../middleware/au
 const { auditLog } = require('../middleware/audit');
 const { DEFAULT_FFMPEG_OPTIONS } = streamManager;
 const onvif = require('../onvif');
+const timeZone = require('../timeZone');
 
 function getFfmpegOptsForForm(camera) {
   const def = { ...DEFAULT_FFMPEG_OPTIONS };
@@ -858,6 +859,14 @@ router.get('/cameras/:id/edit', requireLogin, (req, res) => {
               <label for="time-sync-interval">Sync every (hours)</label>
               <input type="number" id="time-sync-interval" name="time_sync_interval_hours" value="${c.time_sync_interval_hours || 24}" min="1" max="168" placeholder="24">
             </div>
+            <div class="form-field">
+              <label for="time-zone">Time zone</label>
+              <select id="time-zone" name="time_zone">
+                <option value="" ${!c.time_zone ? 'selected' : ''}>Server default (${escapeHtml(timeZone.serverTimeZone())})</option>
+                ${timeZone.listTimeZones().map((tz) => `<option value="${escapeHtml(tz)}" ${c.time_zone === tz ? 'selected' : ''}>${escapeHtml(tz)}</option>`).join('')}
+              </select>
+              <span class="form-field-hint">Shown on the camera's clock. Summer/winter time is applied automatically.</span>
+            </div>
           </section>
           <section class="form-card form-card-compact form-card-danger">
             <h2 class="form-card-title">Danger Zone</h2>
@@ -989,7 +998,7 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
   const id = Number(req.params.id);
   const c = db.getCamera(id);
   if (!c) return res.redirect('/admin');
-  const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, onvif_port, onvif_username, onvif_password, time_sync_enabled, time_sync_interval_hours } = req.body || {};
+  const { display_name, rtsp_host, rtsp_port, rtsp_path, rtsp_username, rtsp_password, onvif_port, onvif_username, onvif_password, time_sync_enabled, time_sync_interval_hours, time_zone } = req.body || {};
   if (!display_name || !rtsp_host) return res.redirect(`/admin/cameras/${id}/edit`);
   const port = parseInt(rtsp_port) || 554;
   const onvifPort = parseInt(onvif_port) || 8899;
@@ -998,6 +1007,10 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
   const ffmpegOpts = { ...DEFAULT_FFMPEG_OPTIONS, ...ffmpegOptionsFromBody(req.body || {}) };
   const timeSyncEnabled = time_sync_enabled === '1';
   const timeSyncInterval = Math.min(168, Math.max(1, parseInt(time_sync_interval_hours) || 24));
+  const tz = (time_zone || '').trim();
+  if (tz && !timeZone.isValidTimeZone(tz)) {
+    return res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent('Invalid time zone'));
+  }
   
   try {
     assertValidCustomFfmpegOptions(ffmpegOpts);
@@ -1017,6 +1030,7 @@ router.post('/cameras/:id', requireLogin, verifyCsrf, auditLog('camera.update'),
       timeSyncInterval,
       null
     );
+    db.setCameraTimeZone(id, tz || null);
     timeSyncScheduler.restartScheduler(id);
     await streamManager.stopStream(id);
     const updated = db.getCamera(id);
@@ -1042,14 +1056,9 @@ router.post('/cameras/:id/sync-time', requireLogin, verifyCsrf, auditLog('camera
   const c = db.getCamera(id);
   if (!c) return res.redirect('/admin');
   try {
-    const host = c.rtsp_host;
-    const onvifCreds = db.getOnvifCredentials(c);
-    const cam = await onvif.createCam(host, onvifCreds.port, onvifCreds.username, onvifCreds.password);
-    const beforeTime = await onvif.getSystemDateAndTime(cam);
-    const serverTime = new Date();
-    await onvif.setSystemDateAndTime(cam, serverTime);
-    const fmt = (d) => d ? d.toLocaleString('sv-SE') : 'unknown';
-    const msg = `Time synced: ${fmt(beforeTime)} → ${fmt(serverTime)}`;
+    const { beforeTime, serverTime, tz } = await timeSyncScheduler.performTimeSync(c);
+    const fmt = (d) => d ? d.toLocaleString('sv-SE', { timeZone: tz }) : 'unknown';
+    const msg = `Time synced: ${fmt(beforeTime)} → ${fmt(serverTime)} (${tz})`;
     res.redirect(`/admin/cameras/${id}/edit?msg=` + encodeURIComponent(msg));
   } catch (err) {
     console.error('Time sync failed:', err.message);
