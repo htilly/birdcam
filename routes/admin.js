@@ -207,7 +207,7 @@ function ffmpegFormSection(opts) {
       </div>`;
 }
 
-const BUILD_TIME = new Date().toISOString();
+const { BUILD_INFO } = require('../version');
 
 function escapeHtml(s) {
   if (s == null) return '';
@@ -2066,7 +2066,7 @@ router.get('/settings', requireLogin, (req, res) => {
     <fieldset class="settings-group" style="margin-top:1.5rem;">
       <legend>Debug</legend>
       <div class="debug-build-info">
-        <span class="field-hint" style="padding-left:0;margin:0;">Build: <code>${escapeHtml(BUILD_TIME)}</code></span>
+        <span class="field-hint" style="padding-left:0;margin:0;">Version: <code>${escapeHtml(BUILD_INFO.display || '—')}</code> · Built: <code>${escapeHtml(BUILD_INFO.buildTime)}</code></span>
       </div>
       <label class="checkbox-label" style="margin-top:0.75rem;">
         <input type="checkbox" id="debug-log-toggle">

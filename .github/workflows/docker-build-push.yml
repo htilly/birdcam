@@ -76,6 +76,7 @@ jobs:
           INCLUDE_LATEST: ${{ github.event.inputs.include_latest }}
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           IMAGE="${DOCKERHUB_USERNAME}/birdcam"
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
@@ -104,6 +105,9 @@ jobs:
           platforms: ${{ github.ref_name == 'main' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: true
           tags: ${{ steps.docker_tags.outputs.tags }}
-          build-args: GIT_COMMIT=${{ github.sha }}
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_NUMBER=${{ github.run_number }}
+            BUILD_DATE=${{ steps.docker_tags.outputs.build_date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
