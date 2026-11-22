@@ -2,11 +2,18 @@ const db = require('./db');
 const onvif = require('./onvif');
 
 const HOUR_MS = 60 * 60 * 1000;
-const scheduledJobs = new Map(); // cameraId -> interval timer
+// Delay before the first sync after (re)scheduling, so streams/ONVIF are up first.
+const INITIAL_SYNC_DELAY_MS = 60 * 1000;
+const scheduledJobs = new Map(); // cameraId -> { initial, interval } timers
+
+function clearJob(job) {
+  clearTimeout(job.initial);
+  clearInterval(job.interval);
+}
 
 function scheduleTimeSync(cameraId, intervalHours) {
   if (scheduledJobs.has(cameraId)) {
-    clearInterval(scheduledJobs.get(cameraId));
+    clearJob(scheduledJobs.get(cameraId));
     scheduledJobs.delete(cameraId);
   }
 
@@ -14,29 +21,38 @@ function scheduleTimeSync(cameraId, intervalHours) {
   if (intervalHours < 1) intervalHours = 1;
   if (intervalHours > 168) intervalHours = 168;
 
-  // setInterval rather than cron: cron "*/N" in the hour field only works for N < 24 dividing 24
-  const timer = setInterval(() => {
+  const run = () => {
     syncCameraTime(cameraId).catch((err) => {
       console.error(`[timeSync] Unexpected error syncing camera ${cameraId}:`, err.message);
     });
-  }, intervalHours * HOUR_MS);
-  if (typeof timer.unref === 'function') timer.unref();
+  };
 
-  scheduledJobs.set(cameraId, timer);
-  console.log(`[timeSync] Scheduled time sync for camera ${cameraId} every ${intervalHours} hours`);
+  // Sync shortly after start too: the container is redeployed often, and an
+  // interval-only timer restarts from zero each time, so it may never fire.
+  // setInterval rather than cron: cron "*/N" in the hour field only works for N < 24 dividing 24
+  const job = {
+    initial: setTimeout(run, INITIAL_SYNC_DELAY_MS),
+    interval: setInterval(run, intervalHours * HOUR_MS),
+  };
+  for (const t of Object.values(job)) {
+    if (typeof t.unref === 'function') t.unref();
+  }
+
+  scheduledJobs.set(cameraId, job);
+  console.log(`[timeSync] Scheduled time sync for camera ${cameraId} every ${intervalHours} hours (first sync in ${INITIAL_SYNC_DELAY_MS / 1000}s)`);
 }
 
 function stopTimeSync(cameraId) {
   if (scheduledJobs.has(cameraId)) {
-    clearInterval(scheduledJobs.get(cameraId));
+    clearJob(scheduledJobs.get(cameraId));
     scheduledJobs.delete(cameraId);
     console.log(`[timeSync] Stopped time sync for camera ${cameraId}`);
   }
 }
 
 function stopAll() {
-  for (const timer of scheduledJobs.values()) {
-    clearInterval(timer);
+  for (const job of scheduledJobs.values()) {
+    clearJob(job);
   }
   scheduledJobs.clear();
   console.log('[timeSync] Stopped all time sync jobs');
