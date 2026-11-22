@@ -302,6 +302,11 @@ class MotionDetector:
             detectShadows=False,
         )
         self._frame_size = None
+        # Trigger diagnostics: recent pre-motion frame (float32 running average,
+        # only updated while nothing moves) to compare a trigger frame against.
+        self.ref = None
+        self.prev_motion = False
+        self.frames_seen = 0
 
     def prepare(self, w: int, h: int):
         if self._frame_size == (w, h):
@@ -385,6 +390,7 @@ def process_frame(frame, detector: MotionDetector) -> tuple[bool, list, int, int
     min_area = runtime_config["min_area"]
 
     boxes = []
+    kept_contours = []
     total_motion_area = 0.0  # in processing px²
 
     for cnt in contours:
@@ -406,11 +412,89 @@ def process_frame(frame, detector: MotionDetector) -> tuple[bool, list, int, int
             }
         )
         total_motion_area += area_proc
+        kept_contours.append(cnt)
 
     motion_fraction = total_motion_area / detector.proc_area if detector.proc_area > 0 else 0
     motion_detected = motion_fraction >= runtime_config["threshold_fraction"]
 
+    try:
+        _update_trigger_diagnostics(detector, gray, fg_mask, kept_contours, motion_detected, motion_fraction)
+    except Exception as e:  # diagnostics must never break detection
+        logger.warning(f"Trigger diagnostics failed: {e}")
+
     return motion_detected, boxes, w, h
+
+
+# Reference frame update rate while idle (~2s time constant at 10fps)
+_DIAG_REF_ALPHA = 0.05
+
+
+def region_change_stats(cnt, cur, ref, margin=8):
+    """How a changed region differs from the reference frame.
+
+    corr: Pearson correlation of the region (bounding box + margin) with the
+      reference. High (~1) = same structure, only brightness changed (light);
+      low = something new appeared (e.g. a bird).
+    brighter: fraction of clearly changed pixels that got brighter.
+    dmean: mean brightness change in the region.
+    """
+    h, w = cur.shape[:2]
+    x, y, bw, bh = cv2.boundingRect(cnt)
+    x0, y0 = max(0, x - margin), max(0, y - margin)
+    x1, y1 = min(w, x + bw + margin), min(h, y + bh + margin)
+    c = cur[y0:y1, x0:x1].astype(np.float32).ravel()
+    r = ref[y0:y1, x0:x1].ravel()
+    sc, sr = float(c.std()), float(r.std())
+    corr = float(np.corrcoef(c, r)[0, 1]) if sc > 1e-3 and sr > 1e-3 else float("nan")
+    d = c - r
+    changed = np.abs(d) > 8
+    brighter = float((d[changed] > 0).mean()) if changed.any() else float("nan")
+    return {
+        "box": [int(x), int(y), int(bw), int(bh)],
+        "corr": round(corr, 3),
+        "std": [round(sc, 1), round(sr, 1)],
+        "brighter": round(brighter, 2),
+        "dmean": round(float(d.mean()), 1),
+    }
+
+
+def _update_trigger_diagnostics(detector, gray, fg_mask, contours, motion_detected, motion_fraction):
+    detector.frames_seen += 1
+    light = cv2.GaussianBlur(gray, (3, 3), 0)
+    starting = motion_detected and not detector.prev_motion
+    detector.prev_motion = motion_detected
+
+    if starting and detector.ref is not None and detector.frames_seen > config.WARMUP_FRAMES:
+        ref = detector.ref
+        regions = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+        stats = [region_change_stats(c, light, ref) for c in regions]
+        info = {
+            "fg_pct": round(100 * motion_fraction, 1),
+            "mean": [round(float(light.mean()), 1), round(float(ref.mean()), 1)],
+            "regions": stats,
+        }
+        logger.info(f"Trigger stats: {json.dumps(info)}")
+        _save_trigger_image(ref, light, fg_mask)
+
+    if not motion_detected:
+        if detector.ref is None or detector.ref.shape != light.shape:
+            detector.ref = light.astype(np.float32)
+        else:
+            cv2.accumulateWeighted(light, detector.ref, _DIAG_REF_ALPHA)
+
+
+def _save_trigger_image(ref, cur, mask):
+    """Save before | after | mask side by side, keeping the newest MOTION_DEBUG_KEEP."""
+    out_dir = config.MOTION_DEBUG_DIR
+    if not out_dir:
+        return
+    os.makedirs(out_dir, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    img = np.hstack([ref.astype(np.uint8), cur, mask])
+    cv2.imwrite(os.path.join(out_dir, f"trigger-{ts}.jpg"), img)
+    files = sorted(f for f in os.listdir(out_dir) if f.startswith("trigger-"))
+    for old in files[: max(0, len(files) - config.MOTION_DEBUG_KEEP)]:
+        os.remove(os.path.join(out_dir, old))
 
 
 class MotionEventThrottle:
