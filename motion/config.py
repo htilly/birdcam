@@ -95,6 +95,13 @@ SUBSCRIPTIONS_FILE = os.environ.get(
 # At 10fps: 100 frames ≈ 10s, 200 frames ≈ 20s, 500 frames ≈ 50s (matches BG_HISTORY)
 WARMUP_FRAMES = int(os.environ.get("MOTION_WARMUP_FRAMES", 100))
 
+# --- Trigger diagnostics ---
+# On each motion start, log per-region stats (brightness vs. structure change)
+# and save a before/after/mask image here, to tell light changes from birds.
+# Empty string disables saving images (stats are still logged).
+MOTION_DEBUG_DIR = os.environ.get("MOTION_DEBUG_DIR", "/app/data/motion_debug")
+MOTION_DEBUG_KEEP = int(os.environ.get("MOTION_DEBUG_KEEP", 300))
+
 # --- Reconnect ---
 # Seconds to wait before reconnecting to RTSP on failure
 RECONNECT_DELAY_SEC = int(os.environ.get("MOTION_RECONNECT_DELAY", 5))
