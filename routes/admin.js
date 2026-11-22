@@ -7,6 +7,7 @@ const router = express.Router();
 const db = require('../db');
 const streamManager = require('../streamManager');
 const timeSyncScheduler = require('../timeSyncScheduler');
+const motionManager = require('../motionManager');
 const { requireLogin, requireSetup, requireNoSetup } = require('../middleware/auth');
 const { auditLog } = require('../middleware/audit');
 const { DEFAULT_FFMPEG_OPTIONS } = streamManager;
@@ -713,6 +714,8 @@ router.post('/cameras', requireLogin, verifyCsrf, auditLog('camera.create'), asy
     );
     const cam = db.getCamera(id);
     await streamManager.startStream(id, cam);
+    // No-op unless motion detection is enabled; restarts ffmpeg with frame output.
+    await motionManager.startForCamera(id);
     res.redirect('/admin');
   } catch (err) {
     res.redirect('/admin/cameras/new?msg=' + encodeURIComponent(err.message));
@@ -989,7 +992,7 @@ router.post('/cameras/:id/motion', requireLogin, verifyCsrf, auditLog('camera.mo
     c.time_sync_interval_hours,
     motionSettings
   );
-  if (req.app.locals.reloadMotionSettings) req.app.locals.reloadMotionSettings();
+  if (req.app.locals.reloadMotionSettings) req.app.locals.reloadMotionSettings(id);
 
   res.redirect(`/admin/cameras/${id}/motion?msg=` + encodeURIComponent('Motion settings saved'));
 });
@@ -1045,6 +1048,7 @@ router.post('/cameras/:id/delete', requireLogin, verifyCsrf, auditLog('camera.de
   const id = Number(req.params.id);
   if (db.getCamera(id)) {
     timeSyncScheduler.stopTimeSync(id);
+    motionManager.stopForCamera(id);
     await streamManager.stopStream(id);
     db.deleteCamera(id);
   }

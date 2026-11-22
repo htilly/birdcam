@@ -47,7 +47,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("motion")
+logger = logging.getLogger(f"motion.cam{config.CAMERA_ID}")
 
 # ---------------------------------------------------------------------------
 # State
@@ -163,12 +163,18 @@ def _clamp(value, lo, hi):
 
 
 def _relay_url_with_token(url: str) -> str:
-    """Append MOTION_DETECTOR_TOKEN so the Node server accepts us as the detector."""
+    """Append MOTION_DETECTOR_TOKEN so the Node server accepts us as the detector,
+    and our camera id so it can run one detector per camera."""
+    params = []
     token = os.environ.get("MOTION_DETECTOR_TOKEN", "")
-    if not token or "token=" in url:
+    if token and "token=" not in url:
+        params.append(f"token={urllib.parse.quote(token)}")
+    if os.environ.get("MOTION_CAMERA_ID") and "camera_id=" not in url:
+        params.append(f"camera_id={config.CAMERA_ID}")
+    if not params:
         return url
     sep = "&" if "?" in url else "?"
-    return f"{url}{sep}token={urllib.parse.quote(token)}"
+    return url + sep + "&".join(params)
 
 
 async def handle_relay_message(raw: str):
@@ -491,10 +497,15 @@ def _save_trigger_image(ref, cur, mask):
     os.makedirs(out_dir, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     img = np.hstack([ref.astype(np.uint8), cur, mask])
-    cv2.imwrite(os.path.join(out_dir, f"trigger-{ts}.jpg"), img)
-    files = sorted(f for f in os.listdir(out_dir) if f.startswith("trigger-"))
+    prefix = f"trigger-cam{config.CAMERA_ID}-"
+    cv2.imwrite(os.path.join(out_dir, f"{prefix}{ts}.jpg"), img)
+    # Keep the newest MOTION_DEBUG_KEEP per camera (each detector prunes its own).
+    files = sorted(f for f in os.listdir(out_dir) if f.startswith(prefix))
     for old in files[: max(0, len(files) - config.MOTION_DEBUG_KEEP)]:
-        os.remove(os.path.join(out_dir, old))
+        try:
+            os.remove(os.path.join(out_dir, old))
+        except FileNotFoundError:
+            pass
 
 
 class MotionEventThrottle:
@@ -926,7 +937,7 @@ async def send_push_async(num_boxes: int):
         None,
         lambda: push_notifier.notify_all(
             subscriptions_file=config.SUBSCRIPTIONS_FILE,
-            title="Motion Detected",
+            title=f"Motion Detected: {config.CAMERA_NAME}" if config.CAMERA_NAME else "Motion Detected",
             body=f"Movement detected in {num_boxes} area{'s' if num_boxes != 1 else ''}.",
             icon="/favicon.png",
             vapid_private_key=config.VAPID_PRIVATE_KEY,

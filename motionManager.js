@@ -3,11 +3,15 @@ const { spawn } = require('child_process');
 const streamManager = require('./streamManager');
 const db = require('./db');
 
-let motionProcess = null;
+// cameraId -> running motion.py child process (one detector per camera)
+const motionProcesses = new Map();
+// cameraId -> pending restart timer
+const restartTimers = new Map();
+// Cameras whose detector was stopped on purpose (deleted camera): don't restart.
+const stoppedCameras = new Set();
+let enabled = false;
 let isShuttingDown = false;
 
-// Raw frame geometry — must match the enableMotionFrames block of
-// streamManager.buildFfmpegArgs (-pix_fmt gray -s 320x180).
 const MOTION_FRAME_WIDTH = 320;
 const MOTION_FRAME_HEIGHT = 180;
 const MOTION_FRAME_FORMAT = 'gray';
@@ -25,24 +29,38 @@ function getDetectorToken() {
 }
 
 /**
- * Start motion detector that reads frames from the ffmpeg HLS stream.
- * This avoids opening a duplicate RTSP connection.
+ * Start a motion detector for every configured camera. Each reads raw frames
+ * from its camera's ffmpeg process (the same one that writes HLS), so no
+ * second RTSP connection is opened.
  */
 async function startMotionDetector() {
-  if (motionProcess) {
-    console.log('[motion-manager] Motion detector already running');
-    return;
-  }
-
-  // Get the first camera to detect motion for
+  enabled = true;
   const cameras = db.listCameras();
   if (cameras.length === 0) {
     console.log('[motion-manager] No cameras configured, skipping motion detection');
     return;
   }
+  for (const camera of cameras) {
+    await startForCamera(camera.id);
+  }
+}
 
-  const camera = cameras[0];
-  const cameraId = camera.id;
+/**
+ * Start the motion detector for one camera (no-op if motion detection is
+ * disabled, the camera does not exist, or its detector already runs).
+ */
+async function startForCamera(cameraId) {
+  cameraId = Number(cameraId);
+  if (!enabled || isShuttingDown) return;
+  stoppedCameras.delete(cameraId);
+  clearTimeout(restartTimers.get(cameraId));
+  restartTimers.delete(cameraId);
+  if (motionProcesses.has(cameraId)) {
+    console.log(`[motion-manager] Motion detector for camera ${cameraId} already running`);
+    return;
+  }
+  const camera = db.getCamera(cameraId);
+  if (!camera) return;
 
   // Reuse the already-started ffmpeg process if it was started with raw
   // frame output (pipe:1). Otherwise, restart with motion frames enabled.
@@ -56,12 +74,15 @@ async function startMotionDetector() {
   }
 
   if (!ffmpegProc || !ffmpegProc.stdout) {
-    console.error('[motion-manager] Failed to start ffmpeg with motion frames');
+    console.error(`[motion-manager] Failed to start ffmpeg with motion frames for camera ${cameraId}`);
+    scheduleRestart(cameraId);
     return;
   }
+  // Another call may have started it while we awaited ffmpeg.
+  if (motionProcesses.has(cameraId) || stoppedCameras.has(cameraId) || isShuttingDown) return;
 
   // Start motion.py and pipe ffmpeg stdout to it
-  console.log('[motion-manager] Starting motion.py with piped frames');
+  console.log(`[motion-manager] Starting motion.py for camera ${cameraId} with piped frames`);
   // Pass VAPID keys from DB (or env) so motion.py can send push notifications
   const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || db.getSetting('vapid_private_key') || '';
   const vapidPublicKey  = process.env.VAPID_PUBLIC_KEY  || db.getSetting('vapid_public_key')  || '';
@@ -74,18 +95,19 @@ async function startMotionDetector() {
       MOTION_FRAME_HEIGHT: String(MOTION_FRAME_HEIGHT),
       MOTION_FRAME_FORMAT: MOTION_FRAME_FORMAT,
       MOTION_CAMERA_ID: String(cameraId),
+      MOTION_CAMERA_NAME: camera.display_name || '',
       VAPID_PRIVATE_KEY: vapidPrivateKey,
       VAPID_PUBLIC_KEY:  vapidPublicKey,
       MOTION_DETECTOR_TOKEN: detectorToken,
     },
   });
-  motionProcess = proc;
+  motionProcesses.set(cameraId, proc);
 
   // Writes after motion.py dies fail with EPIPE; without a listener that
   // would be an uncaught 'error' and take down the server.
   proc.stdin.on('error', (err) => {
     if (err.code !== 'EPIPE' && err.code !== 'ERR_STREAM_DESTROYED') {
-      console.error('[motion-manager] Motion stdin error:', err);
+      console.error(`[motion-manager] Motion stdin error (camera ${cameraId}):`, err);
     }
   });
 
@@ -94,21 +116,52 @@ async function startMotionDetector() {
   forwarder.target = proc.stdin;
 
   proc.on('error', (err) => {
-    console.error('[motion-manager] Motion process error:', err);
+    console.error(`[motion-manager] Motion process error (camera ${cameraId}):`, err);
   });
 
   proc.on('exit', (code, signal) => {
-    console.log(`[motion-manager] Motion process exited code=${code} signal=${signal}`);
+    console.log(`[motion-manager] Motion process for camera ${cameraId} exited code=${code} signal=${signal}`);
     // Detach; the forwarder keeps consuming (and discarding) frames so ffmpeg
     // is never back-pressured and the live HLS output keeps flowing.
     if (forwarder.target === proc.stdin) forwarder.target = null;
-    if (motionProcess === proc) motionProcess = null;
-
-    if (!isShuttingDown) {
-      console.log('[motion-manager] Restarting motion detector in 7s...');
-      setTimeout(startMotionDetector, 7000);
-    }
+    if (motionProcesses.get(cameraId) === proc) motionProcesses.delete(cameraId);
+    scheduleRestart(cameraId);
   });
+}
+
+function scheduleRestart(cameraId) {
+  if (isShuttingDown || stoppedCameras.has(cameraId) || restartTimers.has(cameraId)) return;
+  console.log(`[motion-manager] Restarting motion detector for camera ${cameraId} in 7s...`);
+  restartTimers.set(cameraId, setTimeout(() => {
+    restartTimers.delete(cameraId);
+    startForCamera(cameraId).catch((err) =>
+      console.error(`[motion-manager] Restart failed for camera ${cameraId}:`, err.message));
+  }, 7000));
+}
+
+function killProcess(proc) {
+  if (proc && proc.exitCode === null && proc.signalCode === null) {
+    proc.kill('SIGTERM');
+    // proc.killed is already true once SIGTERM is sent, so check real exit state.
+    setTimeout(() => {
+      if (proc.exitCode === null && proc.signalCode === null) {
+        proc.kill('SIGKILL');
+      }
+    }, 5000);
+  }
+}
+
+/** Stop one camera's detector and don't restart it (e.g. the camera was deleted). */
+function stopForCamera(cameraId) {
+  cameraId = Number(cameraId);
+  stoppedCameras.add(cameraId);
+  clearTimeout(restartTimers.get(cameraId));
+  restartTimers.delete(cameraId);
+  const proc = motionProcesses.get(cameraId);
+  if (proc) {
+    console.log(`[motion-manager] Stopping motion detector for camera ${cameraId}`);
+    killProcess(proc);
+  }
 }
 
 /**
@@ -161,21 +214,18 @@ function getFrameForwarder(stdout) {
 
 function stopMotionDetector() {
   isShuttingDown = true;
-  const proc = motionProcess;
-  if (proc && proc.exitCode === null && proc.signalCode === null) {
-    console.log('[motion-manager] Stopping motion detector');
-    proc.kill('SIGTERM');
-    // proc.killed is already true once SIGTERM is sent, so check real exit state.
-    setTimeout(() => {
-      if (proc.exitCode === null && proc.signalCode === null) {
-        proc.kill('SIGKILL');
-      }
-    }, 5000);
+  for (const t of restartTimers.values()) clearTimeout(t);
+  restartTimers.clear();
+  for (const [cameraId, proc] of motionProcesses) {
+    console.log(`[motion-manager] Stopping motion detector for camera ${cameraId}`);
+    killProcess(proc);
   }
 }
 
 module.exports = {
   startMotionDetector,
   stopMotionDetector,
+  startForCamera,
+  stopForCamera,
   getDetectorToken,
 };

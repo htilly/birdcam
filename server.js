@@ -82,10 +82,10 @@ if (!VAPID_PUBLIC_KEY) {
 // outputs from boot.
 const enableMotion = db.getSetting('enable_motion_detector') === 'true' ||
                      process.env.ENABLE_MOTION_DETECTOR === 'true';
-const camerasForStartup = db.listCameras();
-const motionCameraId = enableMotion && camerasForStartup.length ? camerasForStartup[0].id : null;
+// One motion detector per camera (one camera per nest box).
+const motionCameraIds = enableMotion ? db.listCameras().map((c) => c.id) : [];
 
-streamManager.startAll({ motionCameraId }).then(() => {
+streamManager.startAll({ motionCameraIds }).then(() => {
   console.log('All camera streams started.');
 
   // Start motion detector if enabled (after streams are fully up)
@@ -267,6 +267,7 @@ app.get('/api/cameras', (req, res) => {
   const cameras = db.listCameras().map((c) => ({
     id: c.id,
     display_name: c.display_name,
+    live: !!streamManager.isRunning(c.id),
   }));
   res.json(cameras);
 });
@@ -779,7 +780,22 @@ server.on('upgrade', (request, socket, head) => {
 // motion.py connects with ?role=detector; browsers connect without it.
 // All traffic flows through port 3000 — no extra ports needed.
 // ---------------------------------------------------------------------------
-let _motionDetector = null; // the single motion.py detector connection
+// cameraId -> motion.py detector connection (one detector per camera).
+// Key 0 = a detector that did not say which camera it watches (manually started).
+const _motionDetectors = new Map();
+
+function anyMotionDetectorOnline() {
+  for (const d of _motionDetectors.values()) if (d.readyState === 1) return true;
+  return false;
+}
+
+// Send to the detector of one camera, or to all detectors when cameraId is not given.
+function sendToMotionDetectors(str, cameraId = null) {
+  for (const [id, d] of _motionDetectors) {
+    if (cameraId != null && id !== cameraId && id !== 0) continue;
+    if (d.readyState === 1) d.send(str);
+  }
+}
 const motionBrowserClients = new Set();
 
 // ---------------------------------------------------------------------------
@@ -788,10 +804,19 @@ const motionBrowserClients = new Set();
 
 // cameraId -> { incidentId, filePath, ffmpegProc, endTimer }
 const activeMotionIncidents = new Map();
-let motionRuntimeConfig = {
-  cooldown_sec: parseInt(process.env.MOTION_COOLDOWN_SEC, 10) || 30,
-  recording_cooldown_sec: parseInt(process.env.MOTION_RECORDING_COOLDOWN_SEC, 10) || 3,
-};
+// Per-camera runtime config reported by each detector (cameraId -> config).
+const motionRuntimeConfigs = new Map();
+function motionRuntimeConfig(cameraId) {
+  let c = motionRuntimeConfigs.get(cameraId);
+  if (!c) {
+    c = {
+      cooldown_sec: parseInt(process.env.MOTION_COOLDOWN_SEC, 10) || 30,
+      recording_cooldown_sec: parseInt(process.env.MOTION_RECORDING_COOLDOWN_SEC, 10) || 3,
+    };
+    motionRuntimeConfigs.set(cameraId, c);
+  }
+  return c;
+}
 
 function formatIsoNow() {
   return new Date().toISOString();
@@ -1058,14 +1083,17 @@ motionWss.on('connection', (ws, req) => {
       return;
     }
 
-    if (_motionDetector && _motionDetector.readyState === 1) {
-      console.log(`[motion-ws] Replacing existing detector connection with new one from ip=${ip}`);
-      _motionDetector.close(1000, 'replaced');
+    const detCamParam = Number(url.searchParams.get('camera_id'));
+    const detectorCameraId = Number.isInteger(detCamParam) && detCamParam > 0 ? detCamParam : 0;
+    const previous = _motionDetectors.get(detectorCameraId);
+    if (previous && previous.readyState === 1) {
+      console.log(`[motion-ws] Replacing existing detector for camera ${detectorCameraId || '?'} from ip=${ip}`);
+      previous.close(1000, 'replaced');
     }
-    _motionDetector = ws;
-    console.log(`[motion-ws] Detector connected ip=${ip} (${motionBrowserClients.size} browser(s) watching)`);
+    _motionDetectors.set(detectorCameraId, ws);
+    console.log(`[motion-ws] Detector connected camera=${detectorCameraId || '?'} ip=${ip} (${motionBrowserClients.size} browser(s) watching)`);
 
-    const msg = JSON.stringify({ type: 'backend_connected' });
+    const msg = JSON.stringify({ type: 'backend_connected', camera_id: detectorCameraId || null });
     motionBrowserClients.forEach(c => { if (c.readyState === 1) c.send(msg); });
 
     ws.on('message', (data) => {
@@ -1076,12 +1104,13 @@ motionWss.on('connection', (ws, req) => {
       // Persist motion incidents + record MP4 clips
       if (msg && msg.type) {
         if (msg.type === 'config') {
+          const cfg = motionRuntimeConfig(detectorCameraId || Number(msg.camera_id) || 0);
           if (msg.cooldown_sec !== undefined) {
-            motionRuntimeConfig.cooldown_sec = clampNumber(msg.cooldown_sec, 5, 3600, motionRuntimeConfig.cooldown_sec);
+            cfg.cooldown_sec = clampNumber(msg.cooldown_sec, 5, 3600, cfg.cooldown_sec);
           }
           if (msg.recording_cooldown_sec !== undefined) {
             // Upper bound keeps a bad value from recording one clip for hours.
-            motionRuntimeConfig.recording_cooldown_sec = clampNumber(msg.recording_cooldown_sec, 1, 60, motionRuntimeConfig.recording_cooldown_sec);
+            cfg.recording_cooldown_sec = clampNumber(msg.recording_cooldown_sec, 1, 60, cfg.recording_cooldown_sec);
           }
         } else if (msg.type === 'motion') {
           const cameraId = Number(msg.camera_id);
@@ -1089,10 +1118,13 @@ motionWss.on('connection', (ws, req) => {
           const boxesOk = Array.isArray(msg.boxes) && msg.boxes.length > 0;
           if (!Number.isFinite(cameraId) || cameraId < 1) {
             console.warn('[motion-ws] Ignoring motion: invalid or missing camera_id', msg.camera_id);
+          } else if (detectorCameraId && cameraId !== detectorCameraId) {
+            // A detector may only record for the camera it watches.
+            console.warn(`[motion-ws] Ignoring motion for camera ${cameraId} from detector of camera ${detectorCameraId}`);
           } else if (detected && boxesOk) {
             const startedAtIso = msg.timestamp || formatIsoNow();
             const state = activeMotionIncidents.get(cameraId);
-            const cooldownMs = safeNumber(motionRuntimeConfig.recording_cooldown_sec, 3) * 1000;
+            const cooldownMs = safeNumber(motionRuntimeConfig(cameraId).recording_cooldown_sec, 3) * 1000;
 
             if (!state) {
               const s = startMotionIncident(cameraId, startedAtIso);
@@ -1119,13 +1151,20 @@ motionWss.on('connection', (ws, req) => {
     });
 
     ws.on('close', (code, reason) => {
-      if (_motionDetector === ws) _motionDetector = null;
-      console.log(`[motion-ws] Detector disconnected ip=${ip} code=${code} reason=${reason || 'none'}`);
-      const dcMsg = JSON.stringify({ type: 'backend_disconnected' });
+      const replaced = _motionDetectors.get(detectorCameraId) !== ws;
+      if (!replaced) _motionDetectors.delete(detectorCameraId);
+      console.log(`[motion-ws] Detector disconnected camera=${detectorCameraId || '?'} ip=${ip} code=${code} reason=${reason || 'none'}`);
+      if (replaced) return; // a newer detector for this camera took over
+
+      const dcMsg = JSON.stringify({
+        type: anyMotionDetectorOnline() ? 'backend_connected' : 'backend_disconnected',
+        camera_id: detectorCameraId || null,
+      });
       motionBrowserClients.forEach(c => { if (c.readyState === 1) c.send(dcMsg); });
 
-      // Stop any active incident recorders (best-effort)
-      for (const cameraId of activeMotionIncidents.keys()) {
+      // Stop this camera's active recording (all, for a detector of unknown camera)
+      for (const cameraId of [...activeMotionIncidents.keys()]) {
+        if (detectorCameraId && cameraId !== detectorCameraId) continue;
         try { stopMotionIncident(cameraId, formatIsoNow()); } catch (_) {}
       }
     });
@@ -1163,7 +1202,7 @@ motionWss.on('connection', (ws, req) => {
   motionBrowserClients.add(ws);
   console.log(`[motion-ws] Browser connected ip=${ip} (total: ${motionBrowserClients.size})`);
 
-  const backendOnline = _motionDetector && _motionDetector.readyState === 1;
+  const backendOnline = anyMotionDetectorOnline();
   ws.send(JSON.stringify({ type: backendOnline ? 'backend_connected' : 'backend_disconnected' }));
 
   const isAdmin = !!(req.session && req.session.userId);
@@ -1179,9 +1218,9 @@ motionWss.on('connection', (ws, req) => {
       return;
     }
     console.log(`[motion-ws] Browser → detector: ${str.slice(0, 200)}`);
-    if (_motionDetector && _motionDetector.readyState === 1) {
-      _motionDetector.send(str);
-    }
+    // Messages naming a camera go to that camera's detector, others to all.
+    const targetCam = Number(msg.camera_id);
+    sendToMotionDetectors(str, Number.isInteger(targetCam) && targetCam > 0 ? targetCam : null);
   });
 
   ws.on('close', (code, reason) => {
@@ -1213,13 +1252,13 @@ const wsPingInterval = setInterval(() => {
     ws.isAlive = false;
     ws.ping();
   });
-  if (_motionDetector) {
-    if (_motionDetector.isAlive === false) {
-      console.log('[motion-ws] Terminating unresponsive detector');
-      _motionDetector.terminate();
+  for (const [cameraId, d] of _motionDetectors) {
+    if (d.isAlive === false) {
+      console.log(`[motion-ws] Terminating unresponsive detector for camera ${cameraId || '?'}`);
+      d.terminate();
     } else {
-      _motionDetector.isAlive = false;
-      _motionDetector.ping();
+      d.isAlive = false;
+      d.ping();
     }
   }
 }, WS_PING_INTERVAL);
@@ -1307,10 +1346,8 @@ wss.on('connection', (ws, req) => {
 // Expose functions for admin routes
 app.locals.broadcastDeleteMessages = broadcastDeleteMessages;
 // Ask motion.py to re-read the camera's motion settings from the DB (after an admin save).
-app.locals.reloadMotionSettings = () => {
-  if (_motionDetector && _motionDetector.readyState === 1) {
-    _motionDetector.send(JSON.stringify({ type: 'reload_settings' }));
-  }
+app.locals.reloadMotionSettings = (cameraId = null) => {
+  sendToMotionDetectors(JSON.stringify({ type: 'reload_settings' }), cameraId);
 };
 app.locals.broadcastClearChat = broadcastClearChat;
 app.locals.reloadChatMessages = reloadChatMessages;
@@ -1440,7 +1477,7 @@ async function shutdown(signal) {
 
   wss.clients.forEach((client) => client.close());
   motionBrowserClients.forEach((client) => client.close());
-  if (_motionDetector) _motionDetector.close(1000, 'shutdown');
+  for (const d of _motionDetectors.values()) d.close(1000, 'shutdown');
   server.close(() => {
     console.log('Server closed.');
     process.exit(0);
