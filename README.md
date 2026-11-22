@@ -53,3 +53,11 @@ Requires Node 18+ and FFmpeg on your PATH.
 
 - SQLite file: `data/birdcam.db` (persisted via Docker volume `birdcam-data`).
 - Camera credentials are stored in the DB; only admins can see or edit them.
+
+## Versioning
+
+The running version is shown in the header of the public page (hover for details), on the admin Settings → Debug panel, and via `GET /api/build-info`, e.g. `v1.1.0 (#57 · abc1234)`:
+
+- **`v1.1.0`** – semantic version from `package.json`. Bump it when releasing: `npm version patch|minor|major --no-git-tag-version`, then commit.
+- **`#57`** – CI build number (GitHub Actions run number), increases with every image build.
+- **`abc1234`** – short git commit the image was built from (the deploy workflow verifies this).

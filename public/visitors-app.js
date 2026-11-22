@@ -134,17 +134,13 @@
 
   fetch('/api/build-info').then(function(r) { return r.json(); }).then(function(data) {
     var buildEl = document.getElementById('build-number');
-    if (buildEl) {
-      // Prefer git commit hash (production) over date version (local dev)
-      if (data.gitCommit) {
-        buildEl.textContent = 'v' + data.gitCommit;
-      } else if (data.buildTime) {
-        var d = new Date(data.buildTime);
-        d.setHours(d.getHours() + 1);
-        var formatted = d.toISOString().slice(0, 10).replace(/-/g, '') +
-                        d.toISOString().slice(11, 16).replace(':', '');
-        buildEl.textContent = 'v' + formatted;
-      }
-    }
+    if (!buildEl || !data) return;
+    buildEl.textContent = data.display || (data.gitCommit ? 'v' + data.gitCommit : '');
+    var tip = [];
+    if (data.version) tip.push('Version ' + data.version);
+    if (data.buildNumber) tip.push('Build #' + data.buildNumber);
+    if (data.gitCommit) tip.push('Commit ' + data.gitCommit);
+    if (data.buildTime) tip.push('Built ' + new Date(data.buildTime).toLocaleString());
+    buildEl.title = tip.join('\n');
   }).catch(function() {});
 })();

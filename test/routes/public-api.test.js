@@ -352,9 +352,28 @@ describe('public API - build info', { concurrency: false }, () => {
   });
 
   describe('GET /api/build-info', () => {
-    it('returns build time', () => {
-      const buildTime = new Date().toISOString();
-      assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(buildTime));
+    const { buildInfo, formatVersion } = require('../../version');
+    const pkg = require('../../package.json');
+
+    it('reports package.json version, build number, short commit and build date', () => {
+      const info = buildInfo({ GIT_COMMIT: 'abcdef1234567890', BUILD_NUMBER: '42', BUILD_DATE: '2026-01-02T03:04:05Z' });
+      assert.strictEqual(info.version, pkg.version);
+      assert.strictEqual(info.buildNumber, '42');
+      assert.strictEqual(info.gitCommit, 'abcdef1');
+      assert.strictEqual(info.buildTime, '2026-01-02T03:04:05.000Z');
+      assert.strictEqual(info.display, `v${pkg.version} (#42 · abcdef1)`);
+    });
+
+    it('ignores invalid build number and build date', () => {
+      const info = buildInfo({ GIT_COMMIT: 'abcdef1', BUILD_NUMBER: 'x<script>', BUILD_DATE: 'nope' }, new Date('2026-05-05T00:00:00Z'));
+      assert.strictEqual(info.buildNumber, null);
+      assert.strictEqual(info.buildTime, '2026-05-05T00:00:00.000Z');
+    });
+
+    it('formats with missing parts', () => {
+      assert.strictEqual(formatVersion({ version: '1.2.3' }), 'v1.2.3');
+      assert.strictEqual(formatVersion({ version: '1.2.3', gitCommit: 'abc1234' }), 'v1.2.3 (abc1234)');
+      assert.strictEqual(formatVersion({ gitCommit: 'abc1234' }), 'abc1234');
     });
   });
 });

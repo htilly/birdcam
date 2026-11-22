@@ -63,9 +63,14 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Declared late so a new commit hash doesn't invalidate the cached layers above
+# The semantic version comes from package.json; these identify the exact build.
 ARG GIT_COMMIT=unknown
+ARG BUILD_NUMBER=
+ARG BUILD_DATE=
 ENV NODE_ENV=production
 ENV GIT_COMMIT=${GIT_COMMIT}
+ENV BUILD_NUMBER=${BUILD_NUMBER}
+ENV BUILD_DATE=${BUILD_DATE}
 EXPOSE 3000
 
 ENTRYPOINT ["/entrypoint.sh"]

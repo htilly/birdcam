@@ -54,21 +54,17 @@
     }
   }).catch(() => {});
 
-  // Fetch and display build number
+  // Fetch and display the deployed version, e.g. "v1.1.0 (#123 · abc1234)"
   fetch('/api/build-info').then(r => r.json()).then(data => {
     const buildEl = document.getElementById('build-number');
-    if (buildEl) {
-      // Prefer git commit hash (production) over date version (local dev)
-      if (data.gitCommit) {
-        buildEl.textContent = 'v' + data.gitCommit;
-      } else if (data.buildTime) {
-        const d = new Date(data.buildTime);
-        d.setHours(d.getHours() + 1); // Add 1 hour for CET/CEST
-        const formatted = d.toISOString().slice(0, 10).replace(/-/g, '') +
-                          d.toISOString().slice(11, 16).replace(':', '');
-        buildEl.textContent = 'v' + formatted;
-      }
-    }
+    if (!buildEl || !data) return;
+    buildEl.textContent = data.display || (data.gitCommit ? 'v' + data.gitCommit : '');
+    const tip = [];
+    if (data.version) tip.push('Version ' + data.version);
+    if (data.buildNumber) tip.push('Build #' + data.buildNumber);
+    if (data.gitCommit) tip.push('Commit ' + data.gitCommit);
+    if (data.buildTime) tip.push('Built ' + new Date(data.buildTime).toLocaleString());
+    buildEl.title = tip.join('\n');
   }).catch(() => {});
 
   const video = document.getElementById('video');

@@ -35,31 +35,13 @@ const {
 } = require('@simplewebauthn/server');
 
 const PORT = process.env.PORT || 3000;
-const BUILD_TIME = new Date().toISOString();
-const { execSync } = require('child_process');
+const { BUILD_INFO } = require('./version');
 
 // (#22) Shared directory constants — used by both server.js and routes/admin.js
 const snapshotDir = path.join(__dirname, 'data', 'snapshots');
 const motionClipsDir = path.join(__dirname, 'data', 'motion_clips');
 fs.mkdirSync(snapshotDir, { recursive: true });
 fs.mkdirSync(motionClipsDir, { recursive: true });
-
-// Get Git commit hash if available
-let GIT_COMMIT = process.env.GIT_COMMIT || null;
-
-// Truncate to 7 chars (short hash)
-if (GIT_COMMIT && GIT_COMMIT.length > 7) {
-  GIT_COMMIT = GIT_COMMIT.slice(0, 7);
-}
-
-// If not set via env var, try to detect from git (local development)
-if (!GIT_COMMIT || GIT_COMMIT === 'unknown') {
-  try {
-    GIT_COMMIT = execSync('git rev-parse --short HEAD', { encoding: 'utf8', cwd: __dirname }).trim();
-  } catch (e) {
-    GIT_COMMIT = null;
-  }
-}
 
 db.getDb();
 db.migrate();
@@ -296,10 +278,7 @@ app.get('/api/visitor-stats', (req, res) => {
 
 // Public API for build info (no auth) — used to display build version in UI
 app.get('/api/build-info', (req, res) => {
-  res.json({
-    buildTime: BUILD_TIME,
-    gitCommit: GIT_COMMIT
-  });
+  res.json(BUILD_INFO);
 });
 
 // Public visitors stats page (no admin login required) — same look as main page
