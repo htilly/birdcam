@@ -11,6 +11,7 @@ function createTestApp(options = {}) {
   app.set('trust proxy', true);
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
+  app.use((req, res, next) => { if (req.body === undefined) req.body = {}; next(); });
   app.use(express.static(path.join(__dirname, '../../public')));
 
   const sessionSecret = options.sessionSecret || crypto.randomBytes(32).toString('hex');
