@@ -77,6 +77,8 @@ RELAY_URL = os.environ.get(
 # When running with --stdin (frames piped from Node), the camera ID is passed here.
 # Default 1 so the server always gets a valid id (cameras usually start at 1).
 CAMERA_ID = int(os.environ.get("MOTION_CAMERA_ID", 1)) or 1
+# Camera display name, used in push notification titles.
+CAMERA_NAME = os.environ.get("MOTION_CAMERA_NAME", "")
 
 # --- Web Push (VAPID) ---
 # Generate these with: python generate_keys.py
@@ -97,7 +99,8 @@ WARMUP_FRAMES = int(os.environ.get("MOTION_WARMUP_FRAMES", 100))
 
 # --- Trigger diagnostics ---
 # On each motion start, log per-region stats (brightness vs. structure change)
-# and save a before/after/mask image here, to tell light changes from birds.
+# and save a before/after/mask image here (trigger-cam<id>-<UTC>.jpg), to tell
+# light changes from birds.
 # Empty string disables saving images (stats are still logged).
 MOTION_DEBUG_DIR = os.environ.get("MOTION_DEBUG_DIR", "/app/data/motion_debug")
 MOTION_DEBUG_KEEP = int(os.environ.get("MOTION_DEBUG_KEEP", 300))

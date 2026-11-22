@@ -427,13 +427,14 @@ async function stopAll() {
   await Promise.all([...processes.keys()].map((id) => stopStream(id)));
 }
 
-async function startAll({ motionCameraId = null } = {}) {
+async function startAll({ motionCameraIds = [], motionCameraId = null } = {}) {
+  const motionIds = new Set(motionCameraIds);
+  if (motionCameraId != null) motionIds.add(motionCameraId);
   const cameras = db.listCameras();
   for (const c of cameras) {
-    // Enable the rawvideo stdout pipe only for the motion camera to avoid
-    // having two separate ffmpeg processes at steady state.
-    const enableMotionFrames = motionCameraId != null && c.id === motionCameraId;
-    await startStream(c.id, c, enableMotionFrames);
+    // Enable the rawvideo stdout pipe for cameras with motion detection, so the
+    // detector reads frames from the same ffmpeg process as the HLS stream.
+    await startStream(c.id, c, motionIds.has(c.id));
   }
 }
 

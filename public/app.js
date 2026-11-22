@@ -69,6 +69,8 @@
 
   const video = document.getElementById('video');
   const videoWrap = document.querySelector('.video-wrap');
+  const videoGrid = document.getElementById('video-grid');
+  const videoLabel = document.getElementById('video-label');
   const videoOverlay = document.getElementById('video-overlay');
   const cameraTabs = document.getElementById('camera-tabs');
   const chatMessages = document.getElementById('chat-messages');
@@ -112,6 +114,7 @@
     if (playbackEndingOverlay) {
       playbackEndingOverlay.classList.add('hidden');
     }
+    updateVideoGrid(); // a recording plays alone, without the other live tiles
   }
 
   function exitPlaybackMode() {
@@ -222,6 +225,7 @@
         renderTabs();
         if (recCamera) populateRecCameras();
         if (cameras.length && !selectedCameraId) selectCamera(cameras[0].id);
+        updateVideoGrid();
         if (!cameras.length) {
           selectedCameraId = null;
           destroyHls();
@@ -312,6 +316,103 @@
       videoOverlay.querySelector('p').textContent = 'HLS not supported in this browser.';
     }
     renderTabs();
+    updateVideoGrid();
+  }
+
+  // --- Side-by-side live view -------------------------------------------
+  // When two or more cameras are streaming, every live camera gets a tile next
+  // to the main player. The main player (#video) keeps showing the selected
+  // camera with all its features (snapshot, fullscreen, recordings); the other
+  // tiles are plain live players. Clicking a tile selects that camera. Tiles
+  // keep the camera list order so they don't jump around when selecting.
+  const extraPlayers = new Map(); // cameraId -> { wrap, video, hls, retryTimer }
+
+  function updateVideoGrid() {
+    if (!videoGrid) return;
+    const live = cameras.filter((c) => c.live);
+    const multi = !isPlaybackMode && live.length >= 2;
+    const wanted = multi ? live.filter((c) => c.id !== selectedCameraId) : [];
+    const wantedIds = new Set(wanted.map((c) => c.id));
+
+    for (const id of [...extraPlayers.keys()]) {
+      if (!wantedIds.has(id)) destroyExtraPlayer(id);
+    }
+    wanted.forEach((cam) => {
+      if (!extraPlayers.has(cam.id)) createExtraPlayer(cam);
+      const p = extraPlayers.get(cam.id);
+      p.label.textContent = cam.display_name;
+      p.wrap.style.order = String(cameras.indexOf(cam));
+    });
+
+    const showGrid = wanted.length > 0;
+    videoGrid.classList.toggle('multi', showGrid);
+    videoWrap.classList.toggle('is-selected', showGrid);
+    const selected = cameras.find((c) => c.id === selectedCameraId);
+    videoWrap.style.order = selected ? String(cameras.indexOf(selected)) : '0';
+    if (videoLabel) videoLabel.textContent = showGrid && selected ? selected.display_name : '';
+  }
+
+  function createExtraPlayer(cam) {
+    const wrap = document.createElement('div');
+    wrap.className = 'video-wrap video-tile';
+    wrap.title = 'Show ' + cam.display_name;
+    const v = document.createElement('video');
+    v.muted = true;
+    v.autoplay = true;
+    v.playsInline = true;
+    v.setAttribute('playsinline', '');
+    const label = document.createElement('span');
+    label.className = 'video-tile-label';
+    wrap.append(v, label);
+    wrap.addEventListener('click', () => selectCamera(cam.id));
+    videoGrid.appendChild(wrap);
+
+    const p = { wrap, video: v, label, hls: null, retryTimer: null };
+    extraPlayers.set(cam.id, p);
+    const src = `/hls/cam-${cam.id}.m3u8`;
+    const play = () => { const r = v.play(); if (r && r.catch) r.catch(() => {}); };
+
+    if (window.Hls && Hls.isSupported()) {
+      const inst = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        liveSyncDurationCount: 1,
+        liveMaxLatencyDurationCount: 3,
+        maxBufferLength: 4,
+        maxMaxBufferLength: 8,
+      });
+      p.hls = inst;
+      inst.attachMedia(v);
+      let retries = 0;
+      let recoveries = 0;
+      inst.on(Hls.Events.MANIFEST_PARSED, () => { retries = 0; play(); });
+      inst.on(Hls.Events.ERROR, (_, data) => {
+        if (!data.fatal || p.hls !== inst) return;
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && recoveries < 3) {
+          recoveries += 1;
+          inst.recoverMediaError();
+        } else if (retries < 5) {
+          retries += 1;
+          p.retryTimer = setTimeout(() => { if (p.hls === inst) inst.loadSource(src); }, 3000);
+        }
+      });
+      inst.loadSource(src);
+    } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+      v.src = src;
+      play();
+    }
+  }
+
+  function destroyExtraPlayer(id) {
+    const p = extraPlayers.get(id);
+    if (!p) return;
+    clearTimeout(p.retryTimer);
+    if (p.hls) p.hls.destroy();
+    p.hls = null;
+    p.video.removeAttribute('src');
+    p.video.load();
+    p.wrap.remove();
+    extraPlayers.delete(id);
   }
 
   // The `autoplay` attribute alone is unreliable with hls.js/MSE (playback is
@@ -343,6 +444,11 @@
   // Resume a live stream the browser paused while the tab was in the background.
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && video.paused && (hls || video.src) && !isPlaybackMode) startPlayback();
+    if (!document.hidden) {
+      extraPlayers.forEach((p) => {
+        if (p.video.paused) { const r = p.video.play(); if (r && r.catch) r.catch(() => {}); }
+      });
+    }
   });
 
   function destroyHls() {
