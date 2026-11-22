@@ -58,6 +58,6 @@ Requires Node 18+ and FFmpeg on your PATH.
 
 The running version is shown in the header of the public page (hover for details), on the admin Settings → Debug panel, and via `GET /api/build-info`, e.g. `v1.1.0 (#57 · abc1234)`:
 
-- **`v1.1.0`** – semantic version from `package.json`. Bump it when releasing: `npm version patch|minor|major --no-git-tag-version`, then commit.
+- **`v1.1.0`** – semantic version from `package.json`. Bump it in the PR that changes the app: `npm version patch|minor|major --no-git-tag-version`, then commit. See [AGENTS.md](AGENTS.md#versioning) for which bump to use.
 - **`#57`** – CI build number (GitHub Actions run number), increases with every image build.
 - **`abc1234`** – short git commit the image was built from (the deploy workflow verifies this).
